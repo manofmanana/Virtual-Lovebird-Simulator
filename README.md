@@ -11,7 +11,7 @@ Take care of Mango, your virtual lovebird companion! Feed, bathe, play, and nurt
 ### Core Tamagotchi Features
 - **Hunger Management** - Feed Mango to keep hunger levels up
 ````markdown
-# Mango: The Virtual Lovebird v2.0
+# Mango: The Virtual Lovebird v3.0
 
 Mango is a Tamagotchi-inspired virtual pet game featuring Mango the lovebird, built as a final project for CS50's Introduction to Programming with Python at Harvard.
 
