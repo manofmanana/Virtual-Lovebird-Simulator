@@ -1,4 +1,4 @@
-# Mango: The Virtual Lovebird v2.0
+# Mango: The Virtual Lovebird v3.0
 
 A modern Tamagotchi-inspired virtual pet game featuring Mango the lovebird, built as a CS50P Final Project. Enhanced with fun UI, real-world APIs, and sprite support. Inspired by my old bird friend Mango. May he rest in peace.
 
