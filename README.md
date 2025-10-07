@@ -131,7 +131,19 @@ The build output will be placed in `web/build/web/` (when building the `web` app
 - Check “This file will be played in the browser”.
 - Publish.
 
-4. Notes:
+Postmortem (Web Export)
+
+I attempted browser deployment via pygbag. Key lessons:
+
+Version pinning matters (0.9.2 vs 0.12.x templates)
+
+Asset layout and APK naming are strict (web.apk, index.html loader)
+
+CDN/script assumptions vary by host
+Next: ship desktop now; revisit web via Godot/Phaser or a refined pygbag flow.
+
+pygbag has very little documentation, and I was unable to export. Thankfully I was able to download this to my grandma's laptop. From there she is able to play it and we can remember Mango in this way. She loved as much, if not more, than I did. I am glad she will be able to remember him in this way.
+
 
 - Background music is deferred until the player performs the first click to avoid browser autoplay blocking. The code calls `start_music()` on the first user interaction.
 - If you rebuild, recreate the ZIP archive so the latest web build is uploaded.
