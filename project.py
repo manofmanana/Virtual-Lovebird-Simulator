@@ -3,8 +3,30 @@ Mango: The Virtual Lovebird - CS50P Final Project v2.0
 A modern Tamagotchi-inspired virtual pet game featuring Mango the lovebird.
 Enhanced with real-world APIs and beautiful UI.
 """
-
-import pygame
+# Try to import pygame; in web builds the compiled extension may not be installed
+# yet. Retry briefly to allow the loader to install the wheel instead of raising
+# an immediate ModuleNotFoundError that halts execution.
+pygame = None
+try:
+    import pygame as _pygame
+    pygame = _pygame
+except Exception:
+    # On web runtimes this commonly happens while the wheel is being fetched.
+    # Wait a bit and retry a few times to reduce noisy failures.
+    import time
+    retry_count = 12
+    for attempt in range(retry_count):
+        try:
+            time.sleep(0.5)
+            import pygame as _pygame
+            pygame = _pygame
+            print(f'PYGBAG: pygame import succeeded after {attempt+1} retries')
+            break
+        except Exception:
+            pass
+    else:
+        # leave pygame as None; MangoTamagotchi will try to initialize later
+        print('PYGBAG: pygame not importable at module import time after retries')
 # Some modules may not be available in the WASM/pygbag environment; import defensively
 try:
     import sqlite3
@@ -39,14 +61,19 @@ import wave
 import struct
 
 # Pre-initialize the mixer for more reliable audio behavior on different platforms
-# Use common settings: 44100 Hz, 16-bit signed, stereo, small buffer
 try:
     pygame.mixer.pre_init(44100, -16, 2, 512)
 except Exception:
     pass
 
 # Initialize Pygame
-pygame.init()
+try:
+    pygame.init()
+except Exception:
+    # On web builds pygame may not be immediately importable until the wheel is
+    # installed; the wheel installer in the preloader should make pygame importable
+    # before the main runs. Continue gracefully here.
+    pass
 
 # Constants
 SCREEN_WIDTH = 1000
@@ -54,21 +81,9 @@ SCREEN_HEIGHT = 700
 FPS = 60
 
 # If running under pygbag / web, prefer the actual display surface size to
-# avoid letterboxing / horizontal bars caused by mismatched canvas sizes.
-try:
-    import sys
-    if hasattr(sys, '_emscripten_info'):
-        try:
-            # pygame.display.Info() should report the real canvas size in web builds
-            info = pygame.display.Info()
-            if info.current_w and info.current_h:
-                SCREEN_WIDTH = info.current_w
-                SCREEN_HEIGHT = info.current_h
-        except Exception:
-            # ignore and keep defaults
-            pass
-except Exception:
-    pass
+# avoid letterboxing. This must be done after pygame is importable; we'll
+# attempt to update SCREEN_WIDTH/HEIGHT inside MangoTamagotchi.__init__ once
+# pygame becomes available.
 
 # Modern Color Palette
 WHITE = (255, 255, 255)
@@ -124,10 +139,28 @@ except Exception:
 
 class MangoTamagotchi:
     def __init__(self):
+        global pygame, SCREEN_WIDTH, SCREEN_HEIGHT
+        # Ensure pygame is imported and initialized here (after preloader may have
+        # installed local wheels). This avoids ModuleNotFoundError at module import.
+        if pygame is None:
+            try:
+                import pygame as _pygame
+                pygame = _pygame
+                try:
+                    pygame.mixer.pre_init(44100, -16, 2, 512)
+                except Exception:
+                    pass
+                try:
+                    pygame.init()
+                except Exception:
+                    pass
+            except Exception:
+                print('PYGBAG: pygame still not available at Mango init')
+
         # Create the real display surface and a fixed-size logical surface
         # Use browser-friendly display flags when available (pygame.SCALED)
         try:
-            flags = pygame.SCALED if hasattr(pygame, 'SCALED') else 0
+            flags = pygame.SCALED if (pygame is not None and hasattr(pygame, 'SCALED')) else 0
         except Exception:
             flags = 0
         self._display_screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT), flags)
@@ -138,7 +171,17 @@ class MangoTamagotchi:
         try:
             # Check if we're running in a web environment (pygbag)
             import sys
-            if hasattr(sys, '_emscripten_info') or 'pygbag' in str(type(self._display_screen)):
+            is_web = hasattr(sys, '_emscripten_info') or 'pygbag' in str(type(self._display_screen))
+            if is_web and pygame is not None:
+                try:
+                    info = pygame.display.Info()
+                    if info.current_w and info.current_h:
+                        SCREEN_WIDTH = info.current_w
+                        SCREEN_HEIGHT = info.current_h
+                except Exception:
+                    pass
+
+            if is_web:
                 # In pygbag, draw directly to the display surface
                 self.screen = self._display_screen
             else:
@@ -146,7 +189,10 @@ class MangoTamagotchi:
                 self.screen = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
         except Exception:
             # Fallback: use separate surface
-            self.screen = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+            try:
+                self.screen = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+            except Exception:
+                self.screen = None
             
         self.clock = pygame.time.Clock()
         # Fullscreen tracking: starts windowed, can be toggled at runtime
@@ -1606,9 +1652,21 @@ def main():
     import asyncio
     game = MangoTamagotchi()
 
-    # Use a straightforward run strategy: always invoke asyncio.run() so
-    # the runtime controls the event loop lifecycle in the usual way.
-    asyncio.run(game.run())
+    # In pygbag / Python-WASM the asyncio event loop is already running.
+    # Calling asyncio.run() inside an active loop raises RuntimeError. Detect
+    # that case and schedule the coroutine on the running loop instead so
+    # the game runs correctly both on desktop and in the browser.
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        # Schedule the coroutine on the existing loop and return immediately.
+        # This is the pattern recommended for embedding in pygbag.
+        asyncio.ensure_future(game.run())
+    else:
+        asyncio.run(game.run())
 
 if __name__ == "__main__":
     main()

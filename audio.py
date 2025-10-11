@@ -157,8 +157,16 @@ class AudioManager:
     def load_sounds(self):
         base = os.path.join('assets', 'sounds')
         os.makedirs(base, exist_ok=True)
-        flap = os.path.join(base, 'flap.wav')
-        thump = os.path.join(base, 'thump.wav')
+        # Prefer OGG files in web builds (pygbag) for browser-friendly playback.
+        def pick_ext(name):
+            ogg = os.path.join(base, f"{name}.ogg")
+            wav = os.path.join(base, f"{name}.wav")
+            if os.path.exists(ogg):
+                return ogg
+            return wav
+
+        flap = pick_ext('flap')
+        thump = pick_ext('thump')
 
         # create placeholders if missing (safe for CI)
         if not os.path.exists(flap):
@@ -173,12 +181,13 @@ class AudioManager:
                 pass
 
         # Known SFX mapping used by project.py
+        # SFX map: prefer .ogg when available; pick_ext will select available file
         sfx_map = {
-            'flap': 'flap.wav',
-            'thump': 'thump.wav',
-            'button': 'buttonpressed.wav',
-            'medicine': 'medicine.wav',
-            'chirp': 'chirp.wav'
+            'flap': os.path.basename(pick_ext('flap')),
+            'thump': os.path.basename(pick_ext('thump')),
+            'button': os.path.basename(pick_ext('buttonpressed')),
+            'medicine': os.path.basename(pick_ext('medicine')),
+            'chirp': os.path.basename(pick_ext('chirp')),
         }
 
         if pygame and pygame.mixer.get_init():
@@ -207,9 +216,10 @@ class AudioManager:
         except Exception:
             pass
 
+        # Music: prefer OGG for web builds
         self._music_files = {
-            'forest': os.path.join(base, 'forest.wav'),
-            'home': os.path.join(base, 'home.wav')
+            'forest': pick_ext('forest'),
+            'home': pick_ext('home')
         }
 
         for k, p in self._music_files.items():
