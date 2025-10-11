@@ -1,6 +1,18 @@
 """
 Web entrypoint wrapper for pygbag.
 
+PEP 723 inline script metadata used by Python-WASM / pygbag to predeclare
+dependencies and help the packager select the correct wheels. Keep this
+block at the very top of `main.py`.
+
+# /// script
+# dependencies = [
+#  "pygame-ce",
+#  "Pillow",
+#  "requests",
+# ]
+# ///
+
 This file imports and runs the main game entry point.
 Pygbag looks for this file as `main.py` in the top-level app folder.
 """
