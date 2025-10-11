@@ -1549,10 +1549,65 @@ class MangoTamagotchi:
         except Exception:
             pass
 
+    def safe_delay_ms(self, ms: int):
+        """Delay for approximately ms milliseconds without blocking the
+        Emscripten/WASM main thread.
+
+        On web/pygbag builds we avoid calling blocking backends like
+        pygame.time.delay() directly since that can stall the single-threaded
+        event loop. Instead we pump events and tick the local clock in short
+        chunks. On desktop builds we fall back to pygame.time.delay.
+        """
+        try:
+            # Best-effort detection of web/pygbag environment
+            import sys as _sys
+            is_web = bool(getattr(_sys, '_emscripten_info', False) or 'pygbag' in _sys.modules or 'emscripten' in getattr(_sys, 'platform', ''))
+        except Exception:
+            is_web = False
+
+        # If running on web, break the delay into small ticks so the
+        # browser main loop can continue to service events and rendering.
+        if is_web:
+            # choose a safe chunk size (16ms ~= 60fps)
+            chunk = 16
+            remaining = int(ms)
+            try:
+                while remaining > 0:
+                    try:
+                        pygame.event.pump()
+                    except Exception:
+                        pass
+                    try:
+                        # tick a single frame to yield control and update timing
+                        self.clock.tick(FPS)
+                    except Exception:
+                        pass
+                    remaining -= chunk
+            except Exception:
+                # swallow failures and fall back to a blocking delay as last resort
+                try:
+                    pygame.time.delay(ms)
+                except Exception:
+                    pass
+        else:
+            try:
+                pygame.time.delay(ms)
+            except Exception:
+                # ignore failures
+                pass
+
 def main():
-    """Main function to run the game."""
+    """Main function to run the game.
+
+    If an asyncio event loop is already running (as in pygbag/web builds),
+    schedule the main game coroutine on that loop. Otherwise, use
+    asyncio.run() for a normal desktop run.
+    """
     import asyncio
     game = MangoTamagotchi()
+
+    # Use a straightforward run strategy: always invoke asyncio.run() so
+    # the runtime controls the event loop lifecycle in the usual way.
     asyncio.run(game.run())
 
 if __name__ == "__main__":

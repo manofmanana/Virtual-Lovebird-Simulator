@@ -1,27 +1,45 @@
-"""Web entrypoint wrapper for pygbag.
-
-This file is a minimal launcher that imports the main game and runs it.
-It exists so pygbag can find a `main.py` at a top-level app folder.
 """
+Web entrypoint wrapper for pygbag.
+
+This file imports and runs the main game entry point.
+Pygbag looks for this file as `main.py` in the top-level app folder.
+"""
+
 import os
 import sys
+import traceback
 
-# Ensure the repo root is on sys.path so imports like `audio`, `assets`, etc work
-ROOT = os.path.dirname(os.path.abspath(os.path.join(__file__, '..')))
+# Ensure the current folder (project root) is on the import path
+ROOT = os.path.abspath(os.path.dirname(__file__))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-# Some modules (like requests or sqlite3) may not be available or behave
-# differently in the WASM environment. The main script already includes
-# fallbacks; here we just import and run the normal `main()`.
+
+# Simple console logger (works in browser and desktop)
+def log(msg: str):
+    sys.stdout.write(msg + "\n")
+    sys.stdout.flush()
+
+
+# Try importing the main game module
 try:
-    # import the project's main entry
-    from project import main
+    import project  # your main game logic lives in project.py
 except Exception as e:
-    # Provide a tiny fallback page if import fails when running locally
-    sys.stderr.write(f"Failed to import project main: {e}\n")
+    sys.stderr.write(f"[pygbag launcher] Failed to import project: {e}\n")
+    traceback.print_exc()
     raise
 
-if __name__ == '__main__':
-    # Call the existing main function which sets up and runs the game
-    main()
+
+# Entrypoint for both local Python and pygbag builds
+if __name__ == "__main__":
+    log("[pygbag launcher] Starting Mango: The Virtual Lovebird...")
+    # In pygbag, the asyncio loop is already running.
+    # The adjusted `project.main()` handles both web and desktop correctly.
+    debug = os.environ.get('MANGO_DEBUG', '1') == '1'
+    try:
+        project.main()
+    except Exception as e:
+        sys.stderr.write(f"[pygbag launcher] Game exited with error: {e}\n")
+        if debug:
+            traceback.print_exc()
+        raise

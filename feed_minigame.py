@@ -344,27 +344,34 @@ def play_feed_minigame(game, feed_state, exit_state):
                     except Exception:
                         pass
 
-        # draw
-        try:
-            # draw dedicated feed background if available, else fallback
-            if pygame and _feed_bg_surface:
-                try:
-                    game.screen.blit(_feed_bg_surface, (0, 0))
-                except Exception:
+        # tick
+        if clock:
+            clock.tick(FPS)
+        else:
+            # Try to use a provided game clock if available; fall back to a
+            # short sleep only when nothing else is present. Avoid busy-waits
+            # in WASM/browser builds where time.sleep can block the main loop.
+            try:
+                if getattr(game, 'clock', None):
+                    game.clock.tick(FPS)
+                else:
                     try:
-                        game.draw_gradient_background()
+                        time.sleep(1.0 / FPS)
                     except Exception:
-                        # last-resort: clear screen
-                        game.screen.fill((0, 0, 0))
-            else:
-                try:
-                    game.draw_gradient_background()
-                except Exception:
-                    game.screen.fill((0, 0, 0))
-        except Exception:
-            pass
+                        pass
+            except Exception:
+                pass
 
-            # draw seeds and mango
+        # draw background (separate from the tick/fallback logic above)
+        try:
+            game.draw_gradient_background()
+        except Exception:
+            try:
+                game.screen.fill((0, 0, 0))
+            except Exception:
+                pass
+
+        # draw seeds and mango
         try:
             for s in seeds:
                 if _feed_seed_surf:
