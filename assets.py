@@ -1,4 +1,5 @@
 import os
+import sys
 import pygame
 try:
     from PIL import Image
@@ -6,6 +7,9 @@ try:
 except Exception:
     Image = None
     PIL_AVAILABLE = False
+
+# Detect WASM environment
+IS_WASM = sys.platform == 'emscripten' or hasattr(sys, '_emscripten_info')
 
 
 def load_background_images(game):
@@ -57,7 +61,19 @@ def load_mango_sprites(game):
     }
 
     def load_and_prepare(path, size=(100, 100)):
-        # Prefer PIL if available for better resizing/alpha handling, otherwise use pygame directly
+        # In WASM, avoid PIL Image.LANCZOS and pygame.transform.smoothscale - use simpler methods
+        if IS_WASM:
+            # WASM: use simple pygame loading with basic scale
+            try:
+                print(f'[WASM] Loading sprite with simple scale: {path}')
+                s = pygame.image.load(path).convert_alpha()
+                # Use basic scale instead of smoothscale
+                return pygame.transform.scale(s, size)
+            except Exception as e:
+                print(f'[WASM] Failed to load sprite {path}: {e}')
+                return None
+        
+        # Desktop: Prefer PIL if available for better resizing/alpha handling
         if PIL_AVAILABLE and Image is not None:
             try:
                 img = Image.open(path).convert('RGBA')
@@ -68,6 +84,7 @@ def load_mango_sprites(game):
                     img = img.crop(bbox)
 
                 # Resize preserving aspect into a square canvas
+                # Use LANCZOS (high quality) on desktop
                 img.thumbnail(size, Image.LANCZOS)
                 canvas = Image.new('RGBA', size, (0, 0, 0, 0))
                 x = (size[0] - img.width) // 2
@@ -93,7 +110,7 @@ def load_mango_sprites(game):
                 # Fall through to pygame loader
                 pass
 
-        # PIL not available or failed; use pygame loader
+        # PIL not available or failed; use pygame loader with smoothscale
         try:
             s = pygame.image.load(path).convert_alpha()
             return pygame.transform.smoothscale(s, size)

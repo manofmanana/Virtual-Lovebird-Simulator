@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Your Pygbag Game</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #1e1e1e;
+            color: #00ff00;
+            padding: 20px;
+        }
+        .instructions {
+            background: #2d2d2d;
+            border: 2px solid #00ff00;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .step {
+            margin: 10px 0;
+            padding: 10px;
+            background: #3d3d3d;
+        }
+        a {
+            color: #00aaff;
+            text-decoration: none;
+            font-weight: bold;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+        .warning {
+            color: #ff3333;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔧 PYGBAG GAME TEST</h1>
+    
+    <div class="instructions">
+        <h2>STEP 1: Make Sure Server is Running</h2>
+        <div class="step">
+            Open Terminal and run:
+            <pre>cd /Users/alejandroines/mangov3/build/web
+python3 -m http.server 8000</pre>
+        </div>
+    </div>
+
+    <div class="instructions">
+        <h2>STEP 2: Open Your Game</h2>
+        <div class="step">
+            Click this link: <a href="http://localhost:8000/" target="_blank">http://localhost:8000/</a>
+        </div>
+    </div>
+
+    <div class="instructions">
+        <h2>STEP 3: Open Browser Console</h2>
+        <div class="step">
+            In the game window, press <strong>F12</strong> (or right-click → Inspect)
+        </div>
+    </div>
+
+    <div class="instructions">
+        <h2>STEP 4: Check What You See</h2>
+        
+        <h3>A) What's on the screen?</h3>
+        <ul>
+            <li>✅ If you see Mango the bird and buttons → <strong>IT WORKS!</strong></li>
+            <li>⚠️ If you see a teal/blue screen → Check console for errors (Step B)</li>
+            <li>❌ If page won't load → Server isn't running (go back to Step 1)</li>
+        </ul>
+
+        <h3>B) What's in the Browser Console?</h3>
+        <p>Look for these messages:</p>
+        
+        <p><strong>GOOD (means it's loading):</strong></p>
+        <pre>[project.py] pygame imported successfully
+[pygbag launcher] Starting Mango: The Virtual Lovebird...</pre>
+
+        <p class="warning"><strong>BAD (means it failed):</strong></p>
+        <pre>ModuleNotFoundError: No module named 'pygame.base'
+Traceback (most recent call last):
+zipfile.BadZipFile: File is not a zip file</pre>
+
+        <h3>C) What's in the Terminal Output?</h3>
+        <p>At the bottom of the game page, there should be a terminal/console area.</p>
+        <p>It should show Python loading pygame-ce and starting the game.</p>
+        <p><span class="warning">If the terminal is empty or shows errors, copy the text.</span></p>
+    </div>
+
+    <div class="instructions">
+        <h2>STEP 5: Report Back</h2>
+        <div class="step">
+            Tell me:
+            <ul>
+                <li>What you see on screen (teal? Mango? buttons?)</li>
+                <li>Any error messages from browser console (F12)</li>
+                <li>What the terminal output says</li>
+            </ul>
+        </div>
+    </div>
+
+    <hr>
+
+    <h2>🔍 Quick Checks</h2>
+    <ul>
+        <li>Server running on port 8000? Check terminal.</li>
+        <li>Opening <a href="http://localhost:8000/" target="_blank">http://localhost:8000/</a> (not #debug)?</li>
+        <li>Using Chrome or Firefox? (Safari sometimes has issues)</li>
+        <li>Browser console open (F12)?</li>
+    </ul>
+
+    <hr>
+    
+    <p><strong>Current time:</strong> October 13, 2025</p>
+    <p><strong>Build location:</strong> /Users/alejandroines/mangov3/build/web/</p>
+</body>
+</html>

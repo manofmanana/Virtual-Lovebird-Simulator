@@ -2,7 +2,7 @@ from playwright.sync_api import sync_playwright
 import time
 import json
 
-URL = "http://127.0.0.1:8000/index.html"
+URL = "http://127.0.0.1:8000/#debug"
 OUT_DIR = "build/web"
 TERMINAL_OUT = f"{OUT_DIR}/pygbag_headless_terminal.txt"
 CONSOLE_OUT = f"{OUT_DIR}/pygbag_headless_console.json"
