@@ -7,10 +7,14 @@ in CI or on development machines without shipping audio assets.
 """
 
 import os
-import wave
-import struct
 import math
 import time
+try:
+    import wave
+except Exception:
+    # wave may not be available in some WASM/python builds; guard usage below
+    wave = None
+import struct
 
 try:
     import pygame
@@ -61,9 +65,70 @@ class AudioManager:
         # Reserve a dedicated channel index for fallback music so SFX don't steal it
         # Pick a high channel index to avoid collisions with tests/examples
         self._reserved_music_channel_index = 15
+        # Do not initialize the mixer at import time; use ensure_audio to init on first user gesture
+        self._mixer_initialized = False
+
+    def ensure_audio(self):
+        """Ensure the pygame mixer is initialized and sounds are loaded.
+
+        This is safe to call multiple times and is intended to be invoked
+        on the first user gesture in web builds to satisfy browser autoplay
+        restrictions.
+        """
+        if self._mixer_initialized:
+            return True
+        if not pygame:
+            return False
+        
+        # Detect WASM environment
+        try:
+            import sys
+            is_wasm = sys.platform == 'emscripten' or hasattr(sys, '_emscripten_info')
+        except Exception:
+            is_wasm = False
+            
+        try:
+            # In WASM, use minimal mixer initialization
+            if is_wasm:
+                try:
+                    # Use simpler parameters for WASM
+                    pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=1024)
+                except Exception:
+                    try:
+                        pygame.mixer.init()
+                    except Exception:
+                        return False
+            else:
+                # Desktop: use high-quality parameters
+                try:
+                    pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+                except Exception:
+                    try:
+                        pygame.mixer.init()
+                    except Exception:
+                        return False
+            try:
+                pygame.mixer.set_num_channels(16)  # Reduce channels for WASM
+            except Exception:
+                pass
+            self._mixer_initialized = True
+            # Load sounds now that mixer is available
+            try:
+                self.load_sounds()
+            except Exception:
+                pass
+            return True
+        except Exception:
+            return False
 
     # --- WAV placeholder writers ------------------------------------------------
     def write_short_tone(self, path, freq=1500, duration_ms=160, volume=1.0):
+        # Some runtimes (pygbag/wasm) don't include the `wave` stdlib module.
+        # Prefer to skip placeholder file generation in that case to avoid
+        # raising ModuleNotFoundError during import. On desktop, the original
+        # behavior is preserved.
+        if wave is None:
+            return False
         try:
             framerate = 44100
             amplitude = int(32767 * max(0.0, min(1.0, volume)))
@@ -82,6 +147,8 @@ class AudioManager:
             return False
 
     def write_thump(self, path, duration_ms=220, volume=0.9):
+        if wave is None:
+            return False
         try:
             framerate = 44100
             amplitude = int(32767 * max(0.0, min(1.0, volume)))
@@ -125,12 +192,24 @@ class AudioManager:
     def apply_volume_settings(self):
         if not pygame:
             return
+        
+        # Detect WASM environment
+        try:
+            import sys
+            is_wasm = sys.platform == 'emscripten' or hasattr(sys, '_emscripten_info')
+        except Exception:
+            is_wasm = False
+            
         try:
             if pygame.mixer.get_init():
                 try:
-                    # If music is playing in streaming mode, set music volume
-                    if getattr(self.owner, '_music_mode', None) == 'music':
-                        pygame.mixer.music.set_volume(self.owner.music_volume * self.owner.master_volume)
+                    # In WASM, avoid pygame.mixer.music (causes crashes)
+                    # Only handle music if not in WASM and using music mode
+                    if not is_wasm and getattr(self.owner, '_music_mode', None) == 'music':
+                        try:
+                            pygame.mixer.music.set_volume(self.owner.music_volume * self.owner.master_volume)
+                        except Exception:
+                            pass
                 except Exception:
                     pass
             for s in list(self.sounds.keys()):
@@ -307,38 +386,96 @@ class AudioManager:
                 return
             if not pygame:
                 return
+                
+            # Detect WASM environment
+            try:
+                import sys
+                is_wasm = sys.platform == 'emscripten' or hasattr(sys, '_emscripten_info')
+            except Exception:
+                is_wasm = False
+                
             # If already playing this key and the backend reports busy, do nothing
             try:
                 cur = getattr(self.owner, '_music_playing', None)
                 mode = getattr(self.owner, '_music_mode', None)
-                if cur == key and mode == 'music':
-                    try:
-                        if pygame.mixer.music.get_busy():
+                if cur == key:
+                    if mode == 'music' and not is_wasm:
+                        try:
+                            if pygame.mixer.music.get_busy():
+                                return
+                        except Exception:
                             return
-                    except Exception:
-                        return
-                if cur == key and mode == 'sound':
-                    try:
-                        ch = getattr(self.owner, '_music_channel', None)
-                        if ch and ch.get_busy():
+                    if mode == 'sound':
+                        try:
+                            ch = getattr(self.owner, '_music_channel', None)
+                            if ch and ch.get_busy():
+                                return
+                        except Exception:
                             return
-                    except Exception:
-                        return
             except Exception:
                 pass
-            # Try streaming playback (preferred)
-            try:
-                pygame.mixer.music.load(path)
-                pygame.mixer.music.set_volume(self.owner.music_volume * self.owner.master_volume)
-                pygame.mixer.music.play(-1)
+                
+            # In WASM, skip pygame.mixer.music (causes crashes) and use Sound fallback
+            if not is_wasm:
+                # Try streaming playback (preferred on desktop)
                 try:
+                    pygame.mixer.music.load(path)
+                    pygame.mixer.music.set_volume(self.owner.music_volume * self.owner.master_volume)
+                    pygame.mixer.music.play(-1)
+                    try:
+                        setattr(self.owner, '_music_playing', key)
+                        setattr(self.owner, '_music_mode', 'music')
+                    except Exception:
+                        pass
+                    # debug log
+                    try:
+                        msg = f"[audio] music.play() started for {key} -> {path} (vol={self.owner.music_volume * self.owner.master_volume:.3f})"
+                        print(msg)
+                        with open('audio_debug.log', 'a') as _lf:
+                            _lf.write(msg + '\n')
+                    except Exception:
+                        pass
+                    return
+                except Exception:
+                    pass  # Fall through to Sound fallback
+                    
+            # WASM or streaming failed: fallback to Sound playback on a reserved channel
+            try:
+                snd = pygame.mixer.Sound(path)
+                # find a dedicated channel (prefer the reserved music channel)
+                try:
+                    ch = pygame.mixer.Channel(self._reserved_music_channel_index)
+                except Exception:
+                    ch = pygame.mixer.find_channel() or pygame.mixer.Channel(0)
+                # play as looping sound
+                try:
+                    ch.play(snd, loops=-1)
+                except Exception:
+                    try:
+                        ch = snd.play(loops=-1)
+                    except Exception:
+                        ch = None
+                # set volumes
+                try:
+                    if ch:
+                        ch.set_volume(self.owner.music_volume * self.owner.master_volume)
+                except Exception:
+                    pass
+                # keep a reference so the Sound isn't GC'd and mirror state onto owner
+                try:
+                    self.sounds[f'_music_{key}'] = snd
+                except Exception:
+                    pass
+                # mirror state onto owner
+                try:
+                    setattr(self.owner, '_music_channel', ch)
                     setattr(self.owner, '_music_playing', key)
-                    setattr(self.owner, '_music_mode', 'music')
+                    setattr(self.owner, '_music_mode', 'sound')
                 except Exception:
                     pass
                 # debug log
                 try:
-                    msg = f"[audio] music.play() started for {key} -> {path} (vol={self.owner.music_volume * self.owner.master_volume:.3f})"
+                    msg = f"[audio] fallback Sound.play() started for {key} -> {path} (vol={self.owner.music_volume * self.owner.master_volume:.3f})"
                     print(msg)
                     with open('audio_debug.log', 'a') as _lf:
                         _lf.write(msg + '\n')
@@ -346,59 +483,15 @@ class AudioManager:
                     pass
                 return
             except Exception:
-                # streaming failed; fallback to Sound playback on a reserved channel
+                # final failure
                 try:
-                    snd = pygame.mixer.Sound(path)
-                    # find a dedicated channel (prefer the reserved music channel)
-                    try:
-                        ch = pygame.mixer.Channel(self._reserved_music_channel_index)
-                    except Exception:
-                        ch = pygame.mixer.find_channel() or pygame.mixer.Channel(0)
-                    # play as looping sound
-                    try:
-                        ch.play(snd, loops=-1)
-                    except Exception:
-                        try:
-                            ch = snd.play(loops=-1)
-                        except Exception:
-                            ch = None
-                    # set volumes
-                    try:
-                        if ch:
-                            ch.set_volume(self.owner.music_volume * self.owner.master_volume)
-                    except Exception:
-                        pass
-                    # keep a reference so the Sound isn't GC'd and mirror state onto owner
-                    try:
-                        self.sounds[f'_music_{key}'] = snd
-                    except Exception:
-                        pass
-                    # mirror state onto owner
-                    try:
-                        setattr(self.owner, '_music_channel', ch)
-                        setattr(self.owner, '_music_playing', key)
-                        setattr(self.owner, '_music_mode', 'sound')
-                    except Exception:
-                        pass
-                    # debug log
-                    try:
-                        msg = f"[audio] fallback Sound.play() started for {key} -> {path} (vol={self.owner.music_volume * self.owner.master_volume:.3f})"
-                        print(msg)
-                        with open('audio_debug.log', 'a') as _lf:
-                            _lf.write(msg + '\n')
-                    except Exception:
-                        pass
-                    return
+                    msg = f"[audio] could not play music {key}"
+                    print(msg)
+                    with open('audio_debug.log', 'a') as _lf:
+                        _lf.write(msg + '\n')
                 except Exception:
-                    # final failure
-                    try:
-                        msg = f"[audio] could not play music {key}"
-                        print(msg)
-                        with open('audio_debug.log', 'a') as _lf:
-                            _lf.write(msg + '\n')
-                    except Exception:
-                        pass
-                    return
+                    pass
+                return
         except Exception:
             try:
                 msg = f"[audio] could not play music {key} (outer)"
@@ -410,9 +503,16 @@ class AudioManager:
 
     def stop_music(self):
         try:
-            # stop streaming music if used
+            # Detect WASM environment
             try:
-                if getattr(self.owner, '_music_mode', None) == 'music':
+                import sys
+                is_wasm = sys.platform == 'emscripten' or hasattr(sys, '_emscripten_info')
+            except Exception:
+                is_wasm = False
+                
+            # stop streaming music if used (skip in WASM)
+            try:
+                if not is_wasm and getattr(self.owner, '_music_mode', None) == 'music':
                     if pygame:
                         try:
                             pygame.mixer.music.stop()

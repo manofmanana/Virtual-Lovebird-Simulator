@@ -3,31 +3,31 @@ Mango: The Virtual Lovebird - CS50P Final Project v2.0
 A modern Tamagotchi-inspired virtual pet game featuring Mango the lovebird.
 Enhanced with real-world APIs and beautiful UI.
 """
-# Try to import pygame; in web builds the compiled extension may not be installed
-# yet. Retry briefly to allow the loader to install the wheel instead of raising
-# an immediate ModuleNotFoundError that halts execution.
+
+# Import standard library modules first
+import random
+import time
+import json
+from datetime import datetime, timedelta
+import sys
+import os
+import math
+import struct
+
+# Try to import pygame-ce (installed via PEP 723 in main.py)
+# In pygbag, the wheel is installed before this module loads
 pygame = None
 try:
     import pygame as _pygame
     pygame = _pygame
-except Exception:
-    # On web runtimes this commonly happens while the wheel is being fetched.
-    # Wait a bit and retry a few times to reduce noisy failures.
-    import time
-    retry_count = 12
-    for attempt in range(retry_count):
-        try:
-            time.sleep(0.5)
-            import pygame as _pygame
-            pygame = _pygame
-            print(f'PYGBAG: pygame import succeeded after {attempt+1} retries')
-            break
-        except Exception:
-            pass
-    else:
-        # leave pygame as None; MangoTamagotchi will try to initialize later
-        print('PYGBAG: pygame not importable at module import time after retries')
-# Some modules may not be available in the WASM/pygbag environment; import defensively
+    print('[project.py] pygame imported successfully')
+except Exception as e:
+    print(f'[project.py] pygame import failed: {e}')
+    # Don't retry here - if pygame isn't available yet, 
+    # MangoTamagotchi.__init__ will handle it
+    pass
+
+# Import other optional dependencies
 try:
     import sqlite3
     SQLITE_AVAILABLE = True
@@ -35,8 +35,6 @@ except Exception:
     sqlite3 = None
     SQLITE_AVAILABLE = False
 
-import random
-import time
 try:
     import requests
     REQUESTS_AVAILABLE = True
@@ -44,10 +42,6 @@ except Exception:
     requests = None
     REQUESTS_AVAILABLE = False
 
-import json
-from datetime import datetime, timedelta
-import sys
-import os
 try:
     from PIL import Image, ImageDraw
     PIL_AVAILABLE = True
@@ -56,24 +50,36 @@ except Exception:
     ImageDraw = None
     PIL_AVAILABLE = False
 
-import math
-import wave
-import struct
-
-# Pre-initialize the mixer for more reliable audio behavior on different platforms
-try:
-    pygame.mixer.pre_init(44100, -16, 2, 512)
-except Exception:
-    pass
-
-# Initialize Pygame
-try:
-    pygame.init()
-except Exception:
-    # On web builds pygame may not be immediately importable until the wheel is
-    # installed; the wheel installer in the preloader should make pygame importable
-    # before the main runs. Continue gracefully here.
-    pass
+# Initialize Pygame ONLY if pygame is available
+# Skip mixer initialization at module level for WASM compatibility
+if pygame is not None:
+    try:
+        # In WASM/pygbag, avoid initializing mixer at module level
+        # It will be initialized on first user interaction
+        import sys
+        is_wasm = sys.platform == 'emscripten' or hasattr(sys, '_emscripten_info')
+        
+        if not is_wasm:
+            # Desktop only: pre-init mixer and init pygame
+            try:
+                pygame.mixer.pre_init(44100, -16, 2, 512)
+            except Exception as e:
+                print(f'[project.py] mixer pre_init failed: {e}')
+            
+            try:
+                pygame.init()
+                print('[project.py] pygame.init() succeeded (desktop)')
+            except Exception as e:
+                print(f'[project.py] pygame.init() failed: {e}')
+        else:
+            # WASM: Don't call pygame.init() at module level
+            # It will be called in __init__ after user interaction
+            print('[project.py] WASM detected - deferring pygame.init()')
+    except Exception as e:
+        print(f'[project.py] pygame.init() failed: {e}')
+        pass
+else:
+    print('[project.py] pygame is None, skipping initialization')
 
 # Constants
 SCREEN_WIDTH = 1000
@@ -138,6 +144,55 @@ except Exception:
             return 0
 
 class MangoTamagotchi:
+    def _safe_set_mode(self, width, height, flags=None):
+        """Safe display initialization that works on desktop and in WASM.
+
+        On emscripten/pygbag, avoid unsupported flags.
+        """
+        # Ensure integers and reasonable defaults
+        try:
+            w = int(width)
+            h = int(height)
+        except Exception:
+            w, h = 1280, 720
+        # Detect web runtime
+        try:
+            import sys as _sys
+            is_web = getattr(_sys, 'platform', '') == 'emscripten' or hasattr(_sys, '_emscripten_info')
+        except Exception:
+            is_web = False
+        # On web runtimes, use simple set_mode without flags
+        if is_web:
+            try:
+                print(f'[WASM] Attempting set_mode({w}, {h}, 0)')
+                surf = pygame.display.set_mode((w, h), 0)
+                print(f'[WASM] set_mode succeeded')
+                return surf
+            except Exception as e:
+                print(f'[WASM] Failed to set display mode: {e}')
+                import traceback
+                traceback.print_exc()
+                return None
+        # Desktop / non-web: allow SCALED when available
+        try:
+            desktop_flags = 0
+            if flags:
+                desktop_flags = flags
+            else:
+                desktop_flags = getattr(pygame, 'SCALED', 0)
+        except Exception:
+            desktop_flags = getattr(pygame, 'SCALED', 0) if pygame is not None and hasattr(pygame, 'SCALED') else 0
+        try:
+            if desktop_flags:
+                return pygame.display.set_mode((w, h), desktop_flags)
+            else:
+                return pygame.display.set_mode((w, h))
+        except Exception:
+            try:
+                return pygame.display.set_mode((w, h))
+            except Exception:
+                return None
+
     def __init__(self):
         global pygame, SCREEN_WIDTH, SCREEN_HEIGHT
         # Ensure pygame is imported and initialized here (after preloader may have
@@ -146,25 +201,52 @@ class MangoTamagotchi:
             try:
                 import pygame as _pygame
                 pygame = _pygame
+                # Initialize pygame subsystems carefully for WASM
+                print('[WASM] Starting pygame initialization...')
                 try:
-                    pygame.mixer.pre_init(44100, -16, 2, 512)
-                except Exception:
-                    pass
-                try:
-                    pygame.init()
-                except Exception:
-                    pass
-            except Exception:
-                print('PYGBAG: pygame still not available at Mango init')
+                    # Initialize only safe subsystems in WASM
+                    print('[WASM] Initializing display subsystem...')
+                    try:
+                        pygame.display.init()
+                        print('[WASM] display.init() OK')
+                    except Exception as e:
+                        print(f'[WASM] display.init() failed: {e}')
+                    
+                    print('[WASM] Initializing font subsystem...')
+                    try:
+                        pygame.font.init()
+                        print('[WASM] font.init() OK')
+                    except Exception as e:
+                        print(f'[WASM] font.init() failed: {e}')
+                    
+                    # Skip mixer.init() - will be done on user interaction
+                    print('[WASM] Skipping mixer.init() until user interaction')
+                except Exception as e:
+                    print(f'[WASM] pygame subsystem init failed: {e}')
+                    import traceback
+                    traceback.print_exc()
+            except Exception as e:
+                print(f'PYGBAG: pygame still not available at Mango init: {e}')
 
-        # Create the real display surface and a fixed-size logical surface
-        # Use browser-friendly display flags when available (pygame.SCALED)
+        # Create the real display surface and a fixed-size logical surface.
+        # Use the safe initializer for the primary display surface.
+        # In WASM, avoid SCALED and other problematic flags
         try:
-            flags = pygame.SCALED if (pygame is not None and hasattr(pygame, 'SCALED')) else 0
+            import sys
+            is_wasm = sys.platform == 'emscripten' or hasattr(sys, '_emscripten_info')
+            if is_wasm:
+                flags = 0  # No special flags in WASM
+            else:
+                flags = getattr(pygame, 'SCALED', 0) if (pygame is not None and hasattr(pygame, 'SCALED')) else 0
         except Exception:
             flags = 0
-        self._display_screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT), flags)
-        pygame.display.set_caption("Mango: The Virtual Lovebird v2.0")
+        self._display_screen = self._safe_set_mode(SCREEN_WIDTH, SCREEN_HEIGHT, flags)
+        
+        # Set window caption with error handling
+        try:
+            pygame.display.set_caption("Mango: The Virtual Lovebird v2.0")
+        except Exception as e:
+            print(f'[pygame] set_caption failed: {e}')
         
         # For pygbag/web, use the display surface directly as the screen
         # For desktop, keep the separate logical surface for better scaling
@@ -285,31 +367,46 @@ class MangoTamagotchi:
             }
 
         # Load background images and sprites
+        print('[__init__] Loading background images...')
         try:
             self.load_background_images()
-        except Exception:
-            pass
+            print('[__init__] Background images loaded OK')
+        except Exception as e:
+            print(f'[__init__] Background images failed: {e}')
+            import traceback
+            traceback.print_exc()
+        
+        print('[__init__] Loading mango sprites...')
         try:
             self.load_mango_sprites()
-        except Exception:
-            pass
+            print('[__init__] Mango sprites loaded OK')
+        except Exception as e:
+            print(f'[__init__] Mango sprites failed: {e}')
+            import traceback
+            traceback.print_exc()
 
         # Audio manager: encapsulate mixer, sounds, channels and helpers
+        print('[__init__] Initializing audio...')
         try:
             from audio import AudioManager
             self.audio = AudioManager(self)
+            print('[__init__] AudioManager created')
             # mirror sounds dict for compatibility with rest of code
             self.sounds = self.audio.sounds
             # load/create sounds and channels
             try:
                 self.audio.load_sounds()
-            except Exception:
-                pass
-        except Exception:
+                print('[__init__] Sounds loaded OK')
+            except Exception as e:
+                print(f'[__init__] load_sounds failed: {e}')
+        except Exception as e:
             # fallback: keep old loader present but empty
+            print(f'[__init__] AudioManager failed: {e}')
             self.sounds = {}
         # Track whether music has been started by a real user action (browsers block autoplay)
         self._music_started = False
+
+        print('[__init__] __init__ complete!')
 
         # music start flag: set when user has interacted (browsers block autoplay)
         self._music_started = False
@@ -580,6 +677,71 @@ class MangoTamagotchi:
         except Exception:
             pass
         return False
+
+    def show_click_to_start(self):
+        """Draw a simple CLICK TO START splash and wait for first gesture.
+
+        This helps browsers to get a user gesture before attempting audio.
+        """
+        try:
+            if not pygame:
+                return
+            try:
+                font = pygame.font.SysFont(None, 72)
+            except Exception:
+                try:
+                    pygame.font.init()
+                except Exception:
+                    pass
+                try:
+                    font = pygame.font.SysFont(None, 72)
+                except Exception:
+                    return
+            msg = font.render("CLICK TO START", True, WHITE)
+            # center message
+            w, h = (SCREEN_WIDTH, SCREEN_HEIGHT)
+            try:
+                if self.screen:
+                    w, h = self.screen.get_size()
+            except Exception:
+                pass
+            x = (w - msg.get_width()) // 2
+            y = (h - msg.get_height()) // 2
+            try:
+                if self.screen:
+                    self.screen.fill(BLACK)
+                    self.screen.blit(msg, (x, y))
+                    try:
+                        pygame.display.flip()
+                    except Exception:
+                        try:
+                            pygame.display.update()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            # Wait for user gesture
+            clicked = False
+            start = time.time()
+            while not clicked and (time.time() - start) < 30:
+                try:
+                    for e in pygame.event.get():
+                        if e.type in (pygame.MOUSEBUTTONDOWN, pygame.KEYDOWN):
+                            clicked = True
+                            # initialize audio on first gesture
+                            try:
+                                if getattr(self, 'audio', None):
+                                    self.audio.ensure_audio()
+                            except Exception:
+                                pass
+                except Exception:
+                    break
+                try:
+                    pygame.time.wait(10)
+                except Exception:
+                    break
+        except Exception:
+            pass
 
     def _write_thump(self, path, duration_ms=220, volume=0.9):
         try:
@@ -1031,6 +1193,21 @@ class MangoTamagotchi:
     
     async def run(self):
         """Main game loop."""
+        # If enabled, show click-to-start splash so browsers get a user gesture
+        try:
+            if getattr(self, '_show_click_to_start', False):
+                try:
+                    # keep this non-blocking for desktop tests that may not pump events
+                    self._show_click_to_start = False
+                    # show the splash and block until gesture or timeout
+                    try:
+                        self.show_click_to_start()
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+        except Exception:
+            pass
         running = True
         
         while running:
@@ -1073,6 +1250,21 @@ class MangoTamagotchi:
                             self.handle_click((lx, ly))
                         except Exception:
                             self.handle_click(event.pos)
+                        # Browsers require a user gesture to unlock audio. Ensure
+                        # the mixer is initialized on first click/key so audio can play.
+                        try:
+                            if getattr(self, 'audio', None):
+                                try:
+                                    self.audio.ensure_audio()
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                        # Mark music started and attempt to start hub music
+                        try:
+                            self.start_music()
+                        except Exception:
+                            pass
                 elif event.type == pygame.MOUSEMOTION:
                     try:
                         mx, my = event.pos
@@ -1126,6 +1318,15 @@ class MangoTamagotchi:
                     except Exception:
                         pass
                 elif event.type == pygame.KEYDOWN:
+                    # Any key press should also be considered a user gesture
+                    try:
+                        if getattr(self, 'audio', None):
+                            try:
+                                self.audio.ensure_audio()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
                     # Fullscreen toggles: F11 or Alt+Enter
                     try:
                         if event.key == pygame.K_F11:
@@ -1332,24 +1533,25 @@ class MangoTamagotchi:
                     pass
                 tried = False
                 try:
-                    self._display_screen = pygame.display.set_mode((w, h), fs_flag)
-                    tried = True
+                    self._display_screen = self._safe_set_mode(w, h, fs_flag)
+                    tried = True if self._display_screen is not None else False
                 except Exception:
                     tried = False
                 if not tried:
                     try:
                         hwflags = fs_flag
                         try:
+                            # Try a combination of hardware flags on desktop only
                             hwflags = pygame.FULLSCREEN | pygame.HWSURFACE | pygame.DOUBLEBUF
                         except Exception:
                             hwflags = fs_flag
-                        self._display_screen = pygame.display.set_mode((w, h), hwflags)
+                        self._display_screen = self._safe_set_mode(w, h, hwflags)
                         tried = True
                     except Exception:
                         tried = False
                 if not tried:
                     try:
-                        self._display_screen = pygame.display.set_mode((w, h))
+                        self._display_screen = self._safe_set_mode(w, h)
                         tried = True
                     except Exception:
                         tried = False
@@ -1376,7 +1578,7 @@ class MangoTamagotchi:
                     window_flags = 0
                 left_ok = False
                 try:
-                    self._display_screen = pygame.display.set_mode(tuple(self._windowed_size), window_flags)
+                    self._display_screen = self._safe_set_mode(tuple(self._windowed_size)[0], tuple(self._windowed_size)[1], window_flags)
                     left_ok = True
                 except Exception:
                     try:

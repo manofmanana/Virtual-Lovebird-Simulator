@@ -2,22 +2,29 @@ from playwright.sync_api import sync_playwright
 import time
 import json
 
-URL = "http://127.0.0.1:8000/#debug"
+URL = "http://127.0.0.1:8000/index.html"
 OUT_DIR = "build/web"
-TERMINAL_OUT = f"{OUT_DIR}/pygbag_headless_terminal.txt"
-CONSOLE_OUT = f"{OUT_DIR}/pygbag_headless_console.json"
-SCREENSHOT_OUT = f"{OUT_DIR}/pygbag_headless_screenshot.png"
+TERMINAL_OUT = f"{OUT_DIR}/pygbag_headed_terminal.txt"
+CONSOLE_OUT = f"{OUT_DIR}/pygbag_headed_console.json"
+SCREENSHOT_OUT = f"{OUT_DIR}/pygbag_headed_screenshot.png"
 
 console_events = []
 
 with sync_playwright() as p:
-    browser = p.chromium.launch(headless=True)
+    # Launch headed so user can watch the browser
+    browser = p.chromium.launch(headless=False)
     context = browser.new_context(viewport={"width":1280, "height":720})
     page = context.new_page()
 
     def on_console(msg):
         try:
-            console_events.append({"type": msg.type, "text": msg.text})
+            # capture more info when available
+            entry = {"type": msg.type, "text": msg.text}
+            try:
+                entry["location"] = msg.location
+            except Exception:
+                pass
+            console_events.append(entry)
         except Exception:
             console_events.append({"type": "error", "text": "<console capture failed>"})
 
@@ -41,9 +48,9 @@ with sync_playwright() as p:
     except Exception as e:
         print("flappy click failed:", e)
 
-    # wait for runtime to react and possibly log
-    timeout = 15.0
-    poll_interval = 0.3
+    # wait for runtime to react and possibly log - longer so user can observe
+    timeout = 30.0
+    poll_interval = 0.5
     elapsed = 0.0
 
     def get_terminal_text():
@@ -60,12 +67,14 @@ with sync_playwright() as p:
         time.sleep(poll_interval)
         elapsed += poll_interval
         polled = get_terminal_text() or ""
+        # print progress while waiting so user knows it's polling
+        print(f"poll elapsed={elapsed:.1f}s terminal_len={len(polled)}")
         if polled and polled != last_text:
             print("terminal changed (len now)", len(polled))
             break
 
     # extra small wait for late logs
-    time.sleep(0.4)
+    time.sleep(0.6)
 
     # save artifacts
     print("saving screenshot to", SCREENSHOT_OUT)
@@ -88,6 +97,13 @@ with sync_playwright() as p:
     except Exception as e:
         print("write console failed:", e)
 
-    print("closing browser")
+    print("keeping browser open for user to inspect (press Ctrl+C here to continue)")
+    try:
+        # keep the script alive so user can interact with the browser
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("closing browser after user interrupt")
+
     browser.close()
     print("done")
