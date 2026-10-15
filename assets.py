@@ -61,7 +61,7 @@ def load_backgrounds():
     return backgrounds
 
 
-def load_mango_sprites(size=(100, 100)):
+def load_mango_sprites(size=(160, 160)):
     """Return {mood: Surface|None} with every Mango sprite fitted to size."""
     sprites = {}
     for mood, filename in MANGO_SPRITES.items():

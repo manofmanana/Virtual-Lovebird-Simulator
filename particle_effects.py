@@ -6,7 +6,6 @@ button-press animations.
 """
 import time
 import random
-import math
 try:
     import pygame
 except Exception:

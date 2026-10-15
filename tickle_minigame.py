@@ -9,8 +9,8 @@ import random
 import pygame
 
 from assets import load_image
-from config import FPS, SCREEN_HEIGHT, SCREEN_WIDTH, SPRITES
-from ui_helpers import BACK_BUTTON, draw_back_button, draw_message_panel
+from config import FPS, SCREEN_HEIGHT, SCREEN_WIDTH, SPRITES, WHITE
+from ui_helpers import BACK_BUTTON, blit_text, draw_back_button, draw_message_panel, pill
 
 TARGET = 12
 MANGO_SIZE = (120, 96)
@@ -25,6 +25,8 @@ async def play_tickle_minigame(game):
     eric = pygame.transform.smoothscale(eric, ERIC_SIZE) if eric else None  # a cameo from a friend
 
     def reset():
+        game.effects.clear()
+        game.particle_system.clear()
         return {"x": SCREEN_WIDTH / 2, "y": SCREEN_HEIGHT / 2, "vx": 0.0, "vy": 0.0,
                 "tickles": 0, "started": False, "done": False}
 
@@ -37,8 +39,7 @@ async def play_tickle_minigame(game):
 
     def draw():
         game.draw_background("hub")
-        title = game.title_font.render("Tickle Mango!", True, (255, 255, 255))
-        game.screen.blit(title, title.get_rect(center=(SCREEN_WIDTH // 2, 60)))
+        blit_text(game.screen, game.title_font, "Tickle Mango!", WHITE, center=(SCREEN_WIDTH // 2, 48))
 
         if s["started"] and not s["done"] and flying:
             sprite = flying
@@ -51,21 +52,20 @@ async def play_tickle_minigame(game):
             pygame.draw.ellipse(game.screen, (255, 152, 0), mango_rect())
 
         game.particle_system.draw(game.screen)
+        game.effects.draw(game.screen)
         draw_back_button(game)
 
         if not s["started"]:
             if eric:
                 game.screen.blit(eric, eric.get_rect(bottomright=(SCREEN_WIDTH + 40, SCREEN_HEIGHT + 60)))
             draw_message_panel(game, "Tickle Mango!", [
-                "Click or tap Mango to tickle him!", "He'll fly around once you start.",
-                "Press SPACE or click to start"], size=(500, 220))
+                f"Tap Mango {TARGET} times to tickle him.", "He zooms around once you start!",
+                "Tap or press SPACE to start"], size=(520, 230))
         elif s["done"]:
-            draw_message_panel(game, "Hee hee!", ["Congrats! Mango had fun!", "Click or press R to play again"])
+            draw_message_panel(game, "Hee hee!", ["Mango is giggling!", "Tap or press R to play again"])
         else:
-            count = game.font.render(f"Tickles: {s['tickles']}/{TARGET}", True, (255, 255, 255))
-            box = count.get_rect(topright=(SCREEN_WIDTH - 20, 20)).inflate(16, 8)
-            pygame.draw.rect(game.screen, (0, 0, 0), box, border_radius=10)
-            game.screen.blit(count, count.get_rect(center=box.center))
+            pill(game.screen, game.font, f"Tickles  {s['tickles']}/{TARGET}", WHITE, alpha=180, pad=(20, 10),
+                 topright=(SCREEN_WIDTH - 20, 20))
 
     draw()
     await game.fade(fade_in=True)
@@ -92,6 +92,7 @@ async def play_tickle_minigame(game):
                 elif mango_rect().collidepoint(event.pos):
                     s["tickles"] += 1
                     game.particle_system.add_button_effect(*event.pos, "tickle")
+                    game.effects.float_text(game.large_font, "+1", (event.pos[0], event.pos[1] - 30), (255, 140, 200))
                     game.audio.play_sfx("chirp")
                     if s["tickles"] >= TARGET:
                         s["done"] = True

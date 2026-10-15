@@ -60,13 +60,13 @@ def test_hub_draws_and_bathe_button_works(game):
     hub_ui.draw_home_screen(game)
     hub_ui.handle_click(game, button_center("Bathe"))
     assert game.mango_state["cleanliness"] == 70
-    assert any("clean" in text for text, _ in game.hud_messages)
+    assert any("clean" in m[0] for m in game.hud_messages)
 
 
 def test_hub_explains_why_an_action_did_nothing(game):
     game.mango_state["energy"] = 5
     hub_ui.handle_click(game, button_center("Play"))
-    assert any("too tired" in text for text, _ in game.hud_messages)
+    assert any("too tired" in m[0] for m in game.hud_messages)
 
 
 @pytest.mark.parametrize("label", ["Feed", "Tickle"])
@@ -121,7 +121,7 @@ def test_flappy_records_a_crash_score_exactly_once(game, monkeypatch):
     monkeypatch.setattr(flappy, "FLAP_STRENGTH", 0)
     monkeypatch.setattr(flappy, "SPAWN_EVERY", 40)
     gaps = iter([SCREEN_HEIGHT // 2] * 3 + [150] * 50)
-    monkeypatch.setattr(flappy.random, "randint", lambda a, b: next(gaps))
+    monkeypatch.setattr(flappy, "gap_center", lambda: next(gaps))
     script(game, [[key(pygame.K_SPACE)]] + [[]] * 700 + [[key(pygame.K_ESCAPE)]])
     run(flappy.play_flappy_mango(game))
     assert saved == [3]
@@ -130,13 +130,22 @@ def test_flappy_records_a_crash_score_exactly_once(game, monkeypatch):
 def test_feed_catching_seeds_fills_mango_up(game, monkeypatch):
     game.mango_state["hunger"] = 10
     monkeypatch.setattr(feed_minigame, "TARGET", 2)
-    monkeypatch.setattr(feed_minigame, "SPAWN_EVERY", 0.05)
+    monkeypatch.setattr(feed_minigame, "SPAWN_EVERY", (0.05, 0.05))
     # drop every seed right on top of Mango, quickly
     monkeypatch.setattr(feed_minigame.random, "randint", lambda a, b: SCREEN_WIDTH // 2)
-    monkeypatch.setattr(feed_minigame.random, "uniform", lambda a, b: 2000)
+    monkeypatch.setattr(feed_minigame, "SEED_SPEED", (2000, 2000))
     script(game, [[click((SCREEN_WIDTH // 2, 300))]] + [[]] * 120 + [[click(feed_minigame.BACK_BUTTON.center)]])
     run(feed_minigame.play_feed_minigame(game))
     assert game.mango_state["hunger"] == 100
+
+
+def test_feed_gets_harder_as_mango_fills_up():
+    assert feed_minigame.spawn_delay(0) == pytest.approx(1.3)
+    assert feed_minigame.spawn_delay(feed_minigame.TARGET) == pytest.approx(0.55)
+    assert feed_minigame.spawn_delay(10) < feed_minigame.spawn_delay(5)
+    slowest_start, _ = feed_minigame.SEED_SPEED
+    assert feed_minigame.seed_speed(0, roll=0.0) == slowest_start
+    assert feed_minigame.seed_speed(15, roll=0.0) > feed_minigame.seed_speed(5, roll=0.0)
 
 
 def test_tickle_ends_after_enough_tickles(game, monkeypatch):

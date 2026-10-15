@@ -16,7 +16,7 @@ import sys
 # Add the project directory to the path so we can import project.py
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from project import MangoTamagotchi, GameState
+from project import MangoTamagotchi
 
 class TestMangoTamagotchi:
     """Test class for MangoTamagotchi functionality."""

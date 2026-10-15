@@ -12,6 +12,14 @@ ASSETS = "assets"
 SPRITES = f"{ASSETS}/sprites"
 SOUNDS = f"{ASSETS}/sounds"
 BACKGROUNDS = f"{ASSETS}/backgrounds"
+FONT_MEDIUM = f"{ASSETS}/fonts/Fredoka-Medium.ttf"
+FONT_BOLD = f"{ASSETS}/fonts/Fredoka-SemiBold.ttf"
+
+# UI palette
+ACCENT = (255, 201, 60)    # Mango gold
+INK = (34, 24, 18)         # dark brown used for panels and text on light cards
+MUTED = (110, 96, 86)      # secondary text on light cards
+SOFT = (226, 214, 200)     # secondary text on dark panels
 
 # Colors
 WHITE = (255, 255, 255)
