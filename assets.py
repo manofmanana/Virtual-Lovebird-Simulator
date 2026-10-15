@@ -1,167 +1,72 @@
+"""Loading images once at startup, already scaled to the sizes the game draws them at."""
 import os
-import sys
+
 import pygame
-try:
-    from PIL import Image
-    PIL_AVAILABLE = True
-except Exception:
-    Image = None
-    PIL_AVAILABLE = False
 
-# Detect WASM environment
-IS_WASM = sys.platform == 'emscripten' or hasattr(sys, '_emscripten_info')
+from config import BACKGROUNDS, SCREEN_HEIGHT, SCREEN_WIDTH, SPRITES
+
+# Mood/action name -> sprite file
+MANGO_SPRITES = {
+    "idle": "mango_idle.png",
+    "happy": "mango_happy.png",
+    "sad": "mango_sad.png",
+    "tired": "mango_tired.png",
+    "dirty": "mango_dirty.png",
+    "flying": "mango_flying.png",
+    "flying2": "mango_flying2.png",
+    "still": "mango_still.png",
+    "moving": "mango_moving.png",
+}
 
 
-def load_background_images(game):
-    """Load background images for hub and flappy into the provided game instance.
+def _display_ready():
+    return pygame.display.get_init() and pygame.display.get_surface() is not None
 
-    This mirrors the original behavior but lives in a small helper module to
-    keep project.py focused on game flow.
-    """
-    game.hub_background = None
-    game.flappy_background = None
 
+def load_image(path, alpha=True):
+    """Load an image, or return None if the file is missing or unreadable."""
+    if not os.path.exists(path):
+        print(f"Missing image: {path}")
+        return None
     try:
-        # Try to load hub background
-        hub_bg_path = "assets/backgrounds/hub_bg.jpg"
-        if os.path.exists(hub_bg_path):
-            game.hub_background = pygame.image.load(hub_bg_path)
-            w, h = game.screen.get_size()
-            game.hub_background = pygame.transform.scale(game.hub_background, (w, h))
-    except Exception:
-        game.hub_background = None
-
-    try:
-        # Try to load flappy background
-        flappy_bg_path = "assets/backgrounds/flappy_bg.jpg"
-        if os.path.exists(flappy_bg_path):
-            game.flappy_background = pygame.image.load(flappy_bg_path)
-            w, h = game.screen.get_size()
-            game.flappy_background = pygame.transform.scale(game.flappy_background, (w, h))
-    except Exception:
-        game.flappy_background = None
+        image = pygame.image.load(path)
+    except pygame.error as e:
+        print(f"Could not load {path}: {e}")
+        return None
+    # convert() makes blitting much faster, but needs a display to exist
+    if _display_ready():
+        image = image.convert_alpha() if alpha else image.convert()
+    return image
 
 
-def load_mango_sprites(game):
-    """Load Mango sprite images into the game instance.
+def fit_sprite(image, size):
+    """Trim transparent edges, then scale to fit inside size (keeping proportions), centered."""
+    trimmed = image.subsurface(image.get_bounding_rect()).copy() if image.get_bounding_rect().w else image
+    scale = min(size[0] / trimmed.get_width(), size[1] / trimmed.get_height())
+    scaled = pygame.transform.smoothscale(
+        trimmed, (max(1, int(trimmed.get_width() * scale)), max(1, int(trimmed.get_height() * scale)))
+    )
+    canvas = pygame.Surface(size, pygame.SRCALPHA)
+    canvas.blit(scaled, scaled.get_rect(center=(size[0] // 2, size[1] // 2)))
+    return canvas
 
-    This is a near-copy of the original helper but adjusted to reference the
-    passed-in `game` object. It leaves the same fallbacks and printing so the
-    runtime behavior is unchanged.
-    """
-    game.mango_sprites = {}
 
-    sprite_files = {
-        'idle': 'mango_idle.png',
-        'happy': 'mango_happy.png',
-        'sad': 'mango_sad.png',
-        'tired': 'mango_tired.png',
-        'dirty': 'mango_dirty.png',
-        'flying': 'mango_flying.png',
-    }
+def load_backgrounds():
+    """Return {'hub': Surface|None, 'flappy': ..., 'feed': ...} scaled to the screen."""
+    files = {"hub": "hub_bg.jpg", "flappy": "flappy_bg.jpg", "feed": "feed_bg.jpg"}
+    backgrounds = {}
+    for key, filename in files.items():
+        image = load_image(os.path.join(BACKGROUNDS, filename), alpha=False)
+        backgrounds[key] = pygame.transform.smoothscale(image, (SCREEN_WIDTH, SCREEN_HEIGHT)) if image else None
+    return backgrounds
 
-    def load_and_prepare(path, size=(100, 100)):
-        # In WASM, avoid PIL Image.LANCZOS and pygame.transform.smoothscale - use simpler methods
-        if IS_WASM:
-            # WASM: use simple pygame loading with basic scale
-            try:
-                print(f'[WASM] Loading sprite with simple scale: {path}')
-                s = pygame.image.load(path).convert_alpha()
-                # Use basic scale instead of smoothscale
-                return pygame.transform.scale(s, size)
-            except Exception as e:
-                print(f'[WASM] Failed to load sprite {path}: {e}')
-                return None
-        
-        # Desktop: Prefer PIL if available for better resizing/alpha handling
-        if PIL_AVAILABLE and Image is not None:
-            try:
-                img = Image.open(path).convert('RGBA')
 
-                # Trim fully-transparent borders if present
-                bbox = img.split()[-1].getbbox()
-                if bbox:
-                    img = img.crop(bbox)
-
-                # Resize preserving aspect into a square canvas
-                # Use LANCZOS (high quality) on desktop
-                img.thumbnail(size, Image.LANCZOS)
-                canvas = Image.new('RGBA', size, (0, 0, 0, 0))
-                x = (size[0] - img.width) // 2
-                y = (size[1] - img.height) // 2
-                canvas.paste(img, (x, y), img)
-
-                # Boost alpha if the sprite is accidentally faint
-                try:
-                    alpha = canvas.split()[-1]
-                    avg = sum(alpha.getdata()) / (size[0] * size[1])
-                    if avg < 60:
-                        def boost(a):
-                            return min(255, int(a * 1.6))
-                        alpha = alpha.point(boost)
-                        canvas.putalpha(alpha)
-                except Exception:
-                    pass
-
-                data = canvas.tobytes()
-                surf = pygame.image.fromstring(data, size, 'RGBA')
-                return surf.convert_alpha()
-            except Exception:
-                # Fall through to pygame loader
-                pass
-
-        # PIL not available or failed; use pygame loader with smoothscale
-        try:
-            s = pygame.image.load(path).convert_alpha()
-            return pygame.transform.smoothscale(s, size)
-        except Exception:
-            return None
-
-    for mood, filename in sprite_files.items():
-        try:
-            sprite_path = f"assets/sprites/{filename}"
-            if os.path.exists(sprite_path):
-                game.mango_sprites[mood] = load_and_prepare(sprite_path, (100, 100))
-                print(f"Loaded sprite: {filename}")
-            else:
-                game.mango_sprites[mood] = None
-                print(f"Sprite not found: {filename}")
-        except Exception as e:
-            game.mango_sprites[mood] = None
-            print(f"Error loading sprite {filename}: {e}")
-
-    # Process alternate flying sprite specially for flappy game
-    flying2_path = "assets/sprites/mango_flying2.png"
-    try:
-        if os.path.exists(flying2_path):
-            s2 = load_and_prepare(flying2_path, (100, 100))
-            if s2:
-                game.mango_sprites['flying2'] = s2
-                print("Loaded sprite: mango_flying2.png (processed)")
-            else:
-                game.mango_sprites['flying2'] = game.mango_sprites.get('flying')
-        else:
-            game.mango_sprites['flying2'] = game.mango_sprites.get('flying')
-    except Exception as e:
-        game.mango_sprites['flying2'] = game.mango_sprites.get('flying')
-        print(f"Error loading flying2 sprite: {e}")
-
-    # Ensure keys exist even if None
-    if 'flying' not in game.mango_sprites:
-        game.mango_sprites['flying'] = None
-    if 'flying2' not in game.mango_sprites:
-        game.mango_sprites['flying2'] = None
-
-    # Load tree texture for flappy obstacles if available
-    game.tree_texture = None
-    tree_path = "assets/sprites/tree.png"
-    try:
-        if os.path.exists(tree_path):
-            try:
-                img = pygame.image.load(tree_path).convert_alpha()
-                game.tree_texture = img
-                print("Loaded tree texture for obstacles: tree.png")
-            except Exception as e:
-                print(f"Error loading tree texture: {e}")
-    except Exception:
-        pass
+def load_mango_sprites(size=(100, 100)):
+    """Return {mood: Surface|None} with every Mango sprite fitted to size."""
+    sprites = {}
+    for mood, filename in MANGO_SPRITES.items():
+        image = load_image(os.path.join(SPRITES, filename))
+        sprites[mood] = fit_sprite(image, size) if image else None
+    if sprites.get("flying2") is None:
+        sprites["flying2"] = sprites.get("flying")
+    return sprites
