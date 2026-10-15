@@ -18,10 +18,13 @@ from api import APIHandler
 from assets import load_backgrounds, load_image, load_mango_sprites
 from audio import AudioManager
 from config import (
-    BLACK, DEFAULT_STATE, FPS, GRADIENT_END, GRADIENT_START, IS_WEB, NIGHT_END, NIGHT_START,
-    SCREEN_HEIGHT, SCREEN_WIDTH, SPRITES,
+    BLACK, DEFAULT_STATE, FONT_BOLD, FONT_MEDIUM, FPS, GRADIENT_END, GRADIENT_START, IS_WEB, NIGHT_END,
+    NIGHT_START, SCREEN_HEIGHT, SCREEN_WIDTH, SPRITES,
 )
+from effects import Effects
 from particle_effects import ParticleSystem
+
+CARE_STATS = ("hunger", "happiness", "cleanliness", "energy", "health")
 
 
 class GameState:
@@ -46,6 +49,11 @@ def clamp(value, low=0, high=100):
     return max(low, min(high, value))
 
 
+def load_font(path, size):
+    """The game's rounded Fredoka font, or pygame's built-in font if the file is missing."""
+    return pygame.font.Font(path if os.path.exists(path) else None, size)
+
+
 class MangoTamagotchi:
     def __init__(self, db_path="db/mango.db"):
         pygame.init()
@@ -56,11 +64,11 @@ class MangoTamagotchi:
         pygame.display.set_caption("Mango: The Virtual Lovebird")
         self.clock = pygame.time.Clock()
 
-        self.title_font = pygame.font.Font(None, 48)
-        self.large_font = pygame.font.Font(None, 32)
-        self.font = pygame.font.Font(None, 28)
-        self.small_font = pygame.font.Font(None, 20)
-        self.tiny_font = pygame.font.Font(None, 16)
+        self.title_font = load_font(FONT_BOLD, 38)
+        self.large_font = load_font(FONT_BOLD, 27)
+        self.font = load_font(FONT_MEDIUM, 21)
+        self.small_font = load_font(FONT_BOLD, 17)
+        self.tiny_font = load_font(FONT_MEDIUM, 13)
 
         self.state = GameState.TAMAGOTCHI_HUB
         self.running = True
@@ -71,6 +79,7 @@ class MangoTamagotchi:
 
         self.api_handler = APIHandler()
         self.particle_system = ParticleSystem()
+        self.effects = Effects()
 
         self.last_stat_update = time.time()
         self.last_random_event = time.time()
@@ -85,6 +94,8 @@ class MangoTamagotchi:
         self.init_database()
         self.mango_state = self.load_state() or new_mango_state()
         self.save_state()
+        # what the stat bars currently show; they slide toward the real values
+        self.shown_stats = {stat: float(self.mango_state[stat]) for stat in CARE_STATS}
         self.high_score = self.get_high_score()
 
         # Images and sound
@@ -93,6 +104,7 @@ class MangoTamagotchi:
         self.tree_texture = load_image(os.path.join(SPRITES, "tree.png"))
         self.audio = AudioManager(**db.load_settings(self.settings_path))
         self._gradients = {}
+        self._shown = False
 
     # ---------- Saving ----------
 
@@ -241,14 +253,17 @@ class MangoTamagotchi:
     def restart_game(self):
         """Welcome a brand-new Mango."""
         self.mango_state = new_mango_state()
+        self.shown_stats = {stat: float(self.mango_state[stat]) for stat in CARE_STATS}
         self.is_sick = False
         self.misbehavior_count = 0
         self.last_stat_update = time.time()
         self.state = GameState.TAMAGOTCHI_HUB
         self.save_state()
 
-    def show_message(self, text, seconds=1.8):
-        self.hud_messages.append((text, time.time() + seconds))
+    def show_message(self, text, seconds=2.2):
+        """A toast at the top of the hub: (text, hide at, shown at)."""
+        now = time.time()
+        self.hud_messages.append((text, now + seconds, now))
 
     # ---------- Mini-games ----------
 
@@ -278,6 +293,8 @@ class MangoTamagotchi:
         }
         play, state = games[name]
         await self.fade(fade_in=False)
+        self.particle_system.clear()
+        self.effects.clear()
         self.state = state
         self.audio.play_music("forest")
         await play(self)
@@ -286,6 +303,7 @@ class MangoTamagotchi:
         self.state = GameState.TAMAGOTCHI_HUB
         self.audio.play_music("home")
         self.particle_system.clear()
+        self.effects.clear()
         self.draw()
         await self.fade(fade_in=True)
 
@@ -293,6 +311,7 @@ class MangoTamagotchi:
 
     async def next_frame(self):
         """Show what was drawn, wait for the next frame, and let the browser breathe."""
+        self.effects.apply_shake(self.screen)
         pygame.display.flip()
         self.clock.tick(FPS)
         await asyncio.sleep(0)  # essential in the browser: hands control back to the page
@@ -384,7 +403,10 @@ class MangoTamagotchi:
         if self.is_game_over():
             self.state = GameState.GAME_OVER
         self.particle_system.update(dt)
-        self.hud_messages = [(text, until) for text, until in self.hud_messages if until > time.time()]
+        self.hud_messages = [m for m in self.hud_messages if m[1] > time.time()]
+        for stat in CARE_STATS:
+            shown = self.shown_stats.setdefault(stat, float(self.mango_state[stat]))
+            self.shown_stats[stat] = shown + (self.mango_state[stat] - shown) * min(1.0, dt * 6)
 
     def handle_event(self, event):
         import hub_ui
@@ -415,7 +437,21 @@ class MangoTamagotchi:
             self.update(1.0 / FPS)
             self.draw()
             await self.next_frame()
+            if not self._shown:
+                self._shown = True
+                notify_page_ready()
         self.save_state()
+
+
+def notify_page_ready():
+    """In the browser, tell the page the first frame is up so it can fade out its loading screen."""
+    if not IS_WEB:
+        return
+    try:
+        import platform
+        platform.window.mango_ready()
+    except Exception as e:  # an older page without mango_ready() shouldn't stop the game
+        print(f"mango_ready not available: {e}")
 
 
 def main():

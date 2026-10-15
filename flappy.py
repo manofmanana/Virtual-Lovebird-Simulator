@@ -2,14 +2,13 @@
 
 Controls: SPACE / UP / click / tap to flap. ESC or the Back button returns to the hub.
 """
-import math
 import random
 import time
 
 import pygame
 
-from config import BLACK, DARK_GRAY, GOLD, ORANGE, RED, SCREEN_HEIGHT, SCREEN_WIDTH, SILVER, WHITE
-from ui_helpers import BACK_BUTTON, draw_back_button, draw_message_panel
+from config import ACCENT, BLACK, ORANGE, RED, SCREEN_HEIGHT, SCREEN_WIDTH, SOFT, WHITE
+from ui_helpers import BACK_BUTTON, blit_text, draw_back_button, draw_message_panel, glass_panel, pill
 
 GRAVITY = 0.75
 FLAP_STRENGTH = -13
@@ -21,9 +20,14 @@ MANGO_X = 150
 SPRITE_SIZE = (90, 90)
 
 
+def gap_center():
+    """Where the next gap between trees is, vertically."""
+    return random.randint(150, SCREEN_HEIGHT - 250)
+
+
 def make_tree(game):
     """A pair of trees (top and bottom) with a gap Mango has to fly through."""
-    center = random.randint(150, SCREEN_HEIGHT - 250)
+    center = gap_center()
     top_h = max(8, center - TREE_GAP // 2)
     bottom_h = max(8, SCREEN_HEIGHT - center - TREE_GAP // 2)
     tree = {"x": SCREEN_WIDTH, "center": center, "top_h": top_h, "bottom_h": bottom_h, "scored": False}
@@ -70,6 +74,8 @@ async def play_flappy_mango(game):
     pygame.draw.ellipse(shadow, (0, 0, 0, 40), shadow.get_rect())
 
     def reset():
+        game.effects.clear()
+        game.particle_system.clear()
         return {"y": SCREEN_HEIGHT // 2, "velocity": 0.0, "trees": [], "timer": 0, "score": 0,
                 "started": False, "over": False, "over_at": 0.0, "flap_at": 0.0}
 
@@ -85,6 +91,7 @@ async def play_flappy_mango(game):
         s["over"] = True
         s["over_at"] = time.time()
         game.audio.play_sfx("thump")
+        game.effects.shake(10, 0.4)
         if s["score"] > 0:
             # recorded once per crash
             game.save_score(s["score"])
@@ -104,21 +111,23 @@ async def play_flappy_mango(game):
         else:
             pygame.draw.circle(game.screen, ORANGE, (MANGO_X, int(s["y"])), 18)
 
-        board = pygame.Rect(SCREEN_WIDTH - 220, 20, 200, 80)
-        pygame.draw.rect(game.screen, SILVER, board, border_radius=15)
-        pygame.draw.rect(game.screen, GOLD, board, 3, border_radius=15)
-        game.screen.blit(game.large_font.render(f"Score: {s['score']}", True, BLACK), (board.x + 15, board.y + 15))
-        game.screen.blit(game.small_font.render(f"Best: {game.high_score}", True, DARK_GRAY), (board.x + 15, board.y + 47))
+        board = pygame.Rect(SCREEN_WIDTH - 196, 16, 176, 76)
+        glass_panel(game.screen, board, radius=20, alpha=175)
+        blit_text(game.screen, game.title_font, str(s["score"]), WHITE, midleft=(board.x + 20, board.centery))
+        blit_text(game.screen, game.small_font, "SCORE", ACCENT, shadow=False, topright=(board.right - 18, board.y + 16))
+        blit_text(game.screen, game.small_font, f"Best {game.high_score}", SOFT, shadow=False,
+                  bottomright=(board.right - 18, board.bottom - 14))
+        game.effects.draw(game.screen)
 
         draw_back_button(game)
         if not s["started"]:
-            draw_message_panel(game, "Flappy Mango", ["Press SPACE or click to start!", "Dodge the crows' trees"])
+            draw_message_panel(game, "Flappy Mango", ["Dodge the crows' trees!", "Tap or press SPACE to start"])
         elif s["over"]:
-            draw_message_panel(game, "Game Over!", [f"Final score: {s['score']}", "Click or press R to fly again"],
+            best = " - new best!" if s["score"] and s["score"] >= game.high_score else ""
+            draw_message_panel(game, "Game over!", [f"You scored {s['score']}{best}", "Tap or press R to fly again"],
                                border=RED, size=(500, 220))
         else:
-            hint = game.small_font.render("SPACE or click to flap", True, WHITE)
-            game.screen.blit(hint, (20, SCREEN_HEIGHT - 40))
+            pill(game.screen, game.small_font, "Tap or SPACE to flap", WHITE, alpha=140, bottomleft=(18, SCREEN_HEIGHT - 16))
 
     draw()
     await game.fade(fade_in=True)
@@ -159,6 +168,7 @@ async def play_flappy_mango(game):
                 if not tree["scored"] and tree["x"] + TREE_WIDTH < MANGO_X:
                     tree["scored"] = True
                     s["score"] += 1
+                    game.effects.float_text(game.large_font, "+1", (MANGO_X + 30, int(s["y"]) - 40), ACCENT)
             s["trees"] = [t for t in s["trees"] if t["x"] > -TREE_WIDTH]
 
             hit_tree = any(mango.colliderect(r) for t in s["trees"] for r in tree_rects(t))

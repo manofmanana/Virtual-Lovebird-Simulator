@@ -9,15 +9,33 @@ import random
 import pygame
 
 from assets import fit_sprite, load_image
-from config import FPS, SCREEN_HEIGHT, SCREEN_WIDTH, SPRITES
-from ui_helpers import BACK_BUTTON, draw_back_button, draw_message_panel
+from config import ACCENT, FPS, SCREEN_HEIGHT, SCREEN_WIDTH, SPRITES, WHITE
+from ui_helpers import BACK_BUTTON, blit_text, draw_back_button, draw_message_panel, draw_modern_progress_bar, glass_panel
 
 TARGET = 20
 MANGO_SIZE = (110, 88)
-MANGO_SPEED = 180         # px per second
+MANGO_SPEED = 420           # px per second with the arrow keys
+FOLLOW_SPEED = 1000         # px per second when following the mouse / a finger
 SEED_SIZE = (28, 28)
-SPAWN_EVERY = 3.0         # seconds
 GROUND_H = 44
+
+# Difficulty ramps up as Mango fills up: seeds fall faster and come more often
+SEED_SPEED = (150, 210)     # px per second, at the start
+SEED_SPEEDUP = 7            # extra px per second for every seed caught
+SPAWN_EVERY = (1.3, 0.55)   # seconds between seeds: at the start -> near the end
+
+
+def spawn_delay(caught):
+    """Seconds until the next seed: shrinks from SPAWN_EVERY[0] to SPAWN_EVERY[1] as Mango fills up."""
+    start, end = SPAWN_EVERY
+    return start + (end - start) * min(1.0, caught / TARGET)
+
+
+def seed_speed(caught, roll=None):
+    """How fast a new seed falls (px/s); roll in 0..1 picks within SEED_SPEED (random if None)."""
+    low, high = SEED_SPEED
+    roll = random.random() if roll is None else roll
+    return low + (high - low) * roll + SEED_SPEEDUP * caught
 
 
 def _ground():
@@ -47,6 +65,8 @@ async def play_feed_minigame(game):
     mango_y = SCREEN_HEIGHT - 120
 
     def reset():
+        game.effects.clear()
+        game.particle_system.clear()
         return {"x": SCREEN_WIDTH / 2, "target_x": None, "seeds": [], "spawn_in": 0.0,
                 "caught": 0, "started": False, "done": False, "moving": False}
 
@@ -68,25 +88,22 @@ async def play_feed_minigame(game):
         else:
             pygame.draw.ellipse(game.screen, (255, 152, 0), pygame.Rect(0, 0, *MANGO_SIZE).move(int(s["x"]) - 55, mango_y - 44))
 
-        # progress bar
-        bar = pygame.Rect(SCREEN_WIDTH // 2 - 110, 22, 220, 16)
-        pygame.draw.rect(game.screen, (40, 40, 40), bar, border_radius=8)
-        filled = int(bar.w * min(1, s["caught"] / TARGET))
-        if filled:
-            pygame.draw.rect(game.screen, (100, 200, 100), (bar.x, bar.y, filled, bar.h), border_radius=8)
-        pygame.draw.rect(game.screen, (255, 255, 255), bar, 2, border_radius=8)
-        label = game.font.render(f"Seeds: {s['caught']}/{TARGET}", True, (255, 255, 255))
-        backing = label.get_rect(midleft=(bar.right + 12, bar.centery)).inflate(12, 6)
-        pygame.draw.rect(game.screen, (0, 0, 0), backing, border_radius=8)
-        game.screen.blit(label, label.get_rect(center=backing.center))
+        # progress toward a full tummy
+        hud = pygame.Rect(SCREEN_WIDTH // 2 - 170, 16, 340, 56)
+        glass_panel(game.screen, hud, radius=20, alpha=175)
+        blit_text(game.screen, game.small_font, "SEEDS", ACCENT, shadow=False, midleft=(hud.x + 18, hud.centery))
+        draw_modern_progress_bar(game, hud.x + 84, hud.centery - 7, 170, 14, s["caught"], TARGET, (102, 200, 92))
+        blit_text(game.screen, game.font, f"{s['caught']}/{TARGET}", WHITE, shadow=False, midright=(hud.right - 16, hud.centery))
+        game.particle_system.draw(game.screen)
+        game.effects.draw(game.screen)
 
         draw_back_button(game)
         if not s["started"]:
             draw_message_panel(game, "Feed Mango", [
-                "Catch the falling seeds!", "Arrow keys, or move the mouse / your finger",
-                "Press SPACE or click to start"], size=(520, 220))
+                f"Catch {TARGET} seeds - they speed up!", "Drag your finger, move the mouse, or use the arrows",
+                "Tap or press SPACE to start"], size=(560, 230))
         elif s["done"]:
-            draw_message_panel(game, "Mango is full!", ["Congrats! Mango had fun!", "Click or press R to play again"])
+            draw_message_panel(game, "Mango is full!", ["Yum! That hit the spot.", "Tap or press R to play again"])
 
     draw()
     await game.fade(fade_in=True)
@@ -119,15 +136,13 @@ async def play_feed_minigame(game):
         # Move: arrow keys take priority, otherwise glide toward the pointer
         previous_x = s["x"]
         keys = pygame.key.get_pressed()
-        step = MANGO_SPEED * dt
         if keys[pygame.K_LEFT]:
-            s["x"] -= step
+            s["x"] -= MANGO_SPEED * dt
         elif keys[pygame.K_RIGHT]:
-            s["x"] += step
+            s["x"] += MANGO_SPEED * dt
         elif s["target_x"] is not None:
-            # following a finger needs to be a bit quicker than the arrow keys
-            gap = s["target_x"] - s["x"]
-            s["x"] += max(-step * 3, min(step * 3, gap))
+            reach = FOLLOW_SPEED * dt
+            s["x"] += max(-reach, min(reach, s["target_x"] - s["x"]))
         half = MANGO_SIZE[0] // 2
         s["x"] = max(half, min(SCREEN_WIDTH - half, s["x"]))
         s["moving"] = abs(s["x"] - previous_x) > 0.5
@@ -135,9 +150,9 @@ async def play_feed_minigame(game):
         if s["started"] and not s["done"]:
             s["spawn_in"] -= dt
             if s["spawn_in"] <= 0:
-                s["spawn_in"] = SPAWN_EVERY
+                s["spawn_in"] = spawn_delay(s["caught"])
                 s["seeds"].append({"x": random.randint(20, SCREEN_WIDTH - 20), "y": -10.0,
-                                   "speed": random.uniform(25, 56)})
+                                   "speed": seed_speed(s["caught"])})
 
             mango = pygame.Rect(0, 0, *MANGO_SIZE)
             mango.center = (int(s["x"]), mango_y)
@@ -149,7 +164,11 @@ async def play_feed_minigame(game):
                     s["caught"] += 1
                     s["seeds"].remove(seed)
                     game.audio.play_sfx("chirp")
+                    game.particle_system.add_button_effect(seed_rect.centerx, seed_rect.centery, "feed")
+                    game.effects.float_text(game.large_font, "+1", (seed_rect.centerx, mango.top - 10), (140, 230, 120))
                 elif seed["y"] >= ground_y:
+                    if s["caught"] > 0:
+                        game.effects.float_text(game.large_font, "-1", (seed_rect.centerx, ground_y - 10), (255, 110, 100))
                     s["caught"] = max(0, s["caught"] - 1)
                     s["seeds"].remove(seed)
 
@@ -161,5 +180,6 @@ async def play_feed_minigame(game):
                 game.show_message("Mango is full!")
                 game.audio.play_sfx("thump")
 
+        game.particle_system.update(dt)
         draw()
         await game.next_frame()

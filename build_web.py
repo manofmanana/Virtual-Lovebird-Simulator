@@ -13,19 +13,20 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent
 STAGE = ROOT / "build" / "mango"
-GAME_FILES = [
-    "main.py", "project.py", "config.py", "db.py", "api.py", "assets.py", "audio.py", "hub_ui.py",
-    "ui_helpers.py", "particle_effects.py", "flappy.py", "feed_minigame.py", "tickle_minigame.py", "schema.sql",
-]
-ASSET_PATTERNS = ["sprites/*.png", "backgrounds/*.jpg", "backgrounds/*.png", "sounds/*.ogg"]
+# Every top-level .py file is part of the game except these (tests and tooling)
+NOT_GAME = {"build_web.py", "conftest.py", "test_project.py"}
+ASSET_PATTERNS = ["sprites/*.png", "backgrounds/*.jpg", "backgrounds/*.png", "sounds/*.ogg", "fonts/*.ttf"]
+WEB_EXTRAS = ["sw.js", "manifest.webmanifest", "icon-192.png", "icon-512.png"]
 
 
 def stage():
     if STAGE.exists():
         shutil.rmtree(STAGE)  # fails loudly if something (like a running server) holds it open
     STAGE.mkdir(parents=True)
-    for name in GAME_FILES:
-        shutil.copy2(ROOT / name, STAGE / name)
+    for path in ROOT.glob("*.py"):
+        if path.name not in NOT_GAME:
+            shutil.copy2(path, STAGE / path.name)
+    shutil.copy2(ROOT / "schema.sql", STAGE / "schema.sql")
     for pattern in ASSET_PATTERNS:
         for path in (ROOT / "assets").glob(pattern):
             target = STAGE / path.relative_to(ROOT)
@@ -37,11 +38,19 @@ def stage():
 def main():
     stage()
     command = [sys.executable, "-m", "pygbag", "--app_name", "mango", "--title", "Mango: The Virtual Lovebird",
-               "--icon", "favicon.png", "--ume_block", "1"]
-    if "--serve" not in sys.argv:
-        command.append("--build")
+               "--icon", "favicon.png", "--ume_block", "1", "--template", str(ROOT / "web" / "mango.tmpl"), "--build"]
     subprocess.run(command + [str(STAGE)], check=True)
-    print(f"\nBrowser build: {STAGE / 'build' / 'web'}")
+
+    # The loading page's extras: offline cache, install manifest, and icons
+    out = STAGE / "build" / "web"
+    for name in WEB_EXTRAS:
+        shutil.copy2(ROOT / "web" / name, out / name)
+    shutil.copy2(ROOT / "assets" / "favicon.png", out / "favicon.png")
+    print(f"Browser build: {out}")
+
+    if "--serve" in sys.argv:
+        print("Playing at http://localhost:8000 (Ctrl+C to stop)")
+        subprocess.run([sys.executable, "-m", "http.server", "8000", "--directory", str(out)])
 
 
 if __name__ == "__main__":

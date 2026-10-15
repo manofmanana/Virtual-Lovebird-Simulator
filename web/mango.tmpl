@@ -1,0 +1,374 @@
+<html lang="en-us"><script src="{{cookiecutter.cdn}}pythons.js" type=module id="site" data-python="python{{cookiecutter.PYBUILD}}" data-LINES=42 data-COLUMNS=132 data-os="vtx,snd,gui" async defer>#<!--
+
+# Mango's page template for pygbag. Based on pygbag 0.9.3's default.tmpl:
+# the Python block below unpacks the game and runs main.py; the HTML after it
+# is a branded loading screen instead of pygbag's terminal.
+
+import sys
+import asyncio
+import platform
+from pathlib import Path
+
+
+def mark(stage):
+    platform.window.mango_mark(stage)
+
+
+async def custom_site():
+    import embed
+
+    mark("python started")
+    platform.window.transfer.hidden = true
+
+    bundle = "{{cookiecutter.archive}}"
+    appdir = Path(f"/data/data/{bundle}")
+    appdir.mkdir()
+
+    if platform.window.location.host.find('.itch.zone') > 0:
+        import zipfile
+        async with platform.fopen("{{cookiecutter.archive}}.apk", "rb") as archive:
+            with zipfile.ZipFile(archive) as zip_ref:
+                zip_ref.extractall(appdir.as_posix())
+    else:
+        import tarfile
+        async with platform.fopen("{{cookiecutter.archive}}.tar.gz", "rb") as archive:
+            tar = tarfile.open(fileobj=archive, mode="r:gz")
+            tar.extractall(path=appdir.as_posix(), filter='tar')
+            tar.close()
+    mark("game unpacked")
+
+    platform.run_main(PyConfig, loaderhome=appdir / "assets", loadermain=None)
+    while embed.counter() < 0:
+        await asyncio.sleep(.1)
+    mark("preload done")
+
+    main = appdir / "assets" / "main.py"
+
+    # Browsers only allow sound after a tap, so ask for one (phones usually already have it)
+    if not platform.window.MM.UME:
+        __import__(__name__).__file__ = main
+        platform.window.mango_show_play()
+        while not platform.window.MM.UME:
+            await asyncio.sleep(.1)
+
+    await TopLevel_async_handler.start_toplevel(platform.shell, console=window.python.config.debug)
+    __import__(__name__).__file__ = main
+
+    def ui_callback(pkg):
+        platform.window.mango_status(f"Installing {pkg}...")
+
+    mark("starting main.py")
+    await shell.source(main, callback=ui_callback)
+
+    platform.window.infobox.style.display = "none"
+    platform.window.config.gui_divider = 1
+    platform.window.window_resize()
+    shell.interactive()
+
+asyncio.run(custom_site())
+
+
+# BEGIN BLOCK
+# =============================================================================
+# --></script><head><!--
+//=============================================================================
+--><script type="application/javascript">
+// END BLOCK
+
+config = {
+    xtermjs : "{{cookiecutter.xtermjs}}" ,
+    _sdl2 : "canvas",
+    user_canvas : 0,
+    user_canvas_managed : 0,
+    gui_divider : 2,
+    ume_block : {{cookiecutter.ume_block}},
+    can_close : {{cookiecutter.can_close}},
+    archive : "{{cookiecutter.archive}}",
+    gui_debug : 2,
+    cdn : "{{cookiecutter.cdn}}",
+    autorun : {{cookiecutter.autorun}},
+    PYBUILD : "{{cookiecutter.PYBUILD}}",
+    fb_ar   :  1.77,
+    fb_width : "{{cookiecutter.width}}",
+    fb_height : "{{cookiecutter.height}}"
+}
+
+// ---- Loading screen helpers (called from the Python block and from the game) ----
+// Most of the wait on phones is the Python runtime starting up, not downloading,
+// so the bar follows real loading stages and creeps forward between them.
+const mango_t0 = performance.now()
+window.mango_marks = []
+const STAGES = {
+    "page loaded":      [8,  "Downloading Python..."],
+    "python started":   [70, "Unpacking Mango..."],
+    "game unpacked":    [82, "Getting the cage ready..."],
+    "preload done":     [88, "Waking Mango up..."],
+    "starting main.py": [92, "Waking Mango up..."],
+    "first frame":      [100, "Here he is!"],
+}
+const CEILING = {8: 66, 70: 80, 82: 87, 88: 91, 92: 99, 100: 100}
+let mango_progress = 2, mango_floor = 2
+function mango_mark(stage) {
+    const t = ((performance.now() - mango_t0) / 1000).toFixed(1)
+    mango_marks.push([stage, t])
+    console.log(`[mango] ${t}s ${stage}`)
+    if (STAGES[stage]) {
+        mango_floor = STAGES[stage][0]
+        mango_progress = Math.max(mango_progress, mango_floor)
+        mango_status(STAGES[stage][1])
+    }
+}
+function mango_status(text) {
+    const el = document.getElementById("splash-status")
+    if (el) el.textContent = text
+}
+function mango_show_play() {
+    mango_status("Ready!")
+    document.getElementById("splash-bar").hidden = true
+    document.getElementById("play").hidden = false
+}
+// the game calls this after drawing its first frame
+function mango_ready() {
+    mango_mark("first frame")
+    window.__mango_started = true
+    const fill = document.getElementById("splash-fill")
+    if (fill) fill.style.width = "100%"
+    setTimeout(() => document.getElementById("splash").classList.add("gone"), 250)
+    setTimeout(() => document.getElementById("splash").remove(), 900)
+}
+// main.py calls this if the game crashes while starting
+function mango_error(details) {
+    console.error("[mango] crashed:", details)
+    mango_status("Sorry, Mango couldn't start. Try reloading the page.")
+    const bar = document.getElementById("splash-bar")
+    if (bar) bar.hidden = true
+}
+// pygbag calls show_infobox(); our splash replaces the infobox
+function show_infobox() {}
+
+setInterval(() => {
+    const fill = document.getElementById("splash-fill")
+    if (!fill || window.__mango_started) return
+    // ease toward (but never past) the next stage so the bar never looks frozen
+    const ceiling = CEILING[mango_floor] ?? 99
+    mango_progress += (ceiling - mango_progress) * 0.02
+    fill.style.width = mango_progress.toFixed(1) + "%"
+}, 100)
+
+if ("serviceWorker" in navigator && window.isSecureContext) {
+    navigator.serviceWorker.register("sw.js").catch((e) => console.warn("service worker", e))
+}
+</script>
+
+    <title>{{cookiecutter.title}}</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+    <meta name="description" content="Take care of Mango the lovebird and play three mini-games. A Tamagotchi-style game made with Python and pygame.">
+    <meta name="theme-color" content="#1b1310">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta property="og:title" content="{{cookiecutter.title}}">
+    <meta property="og:description" content="Take care of Mango the lovebird, right in your browser.">
+    <meta property="og:image" content="icon-512.png">
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="icon" type="image/png" href="favicon.png">
+    <link rel="apple-touch-icon" href="icon-192.png">
+    <link rel="preconnect" href="https://pygame-web.github.io" crossorigin>
+
+    <style>
+        html, body {
+            margin: 0;
+            height: 100%;
+            background: #1b1310;
+            overflow: hidden;
+            /* no double-tap zoom, pull-to-refresh, text selection, or grey tap flashes */
+            touch-action: none;
+            overscroll-behavior: none;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            font-family: "Trebuchet MS", system-ui, -apple-system, sans-serif;
+        }
+
+        /* the canvas *must not* have any border or padding, or mouse coords will be wrong */
+        canvas.emscripten {
+            border: 0 none;
+            background-color: transparent;
+            width: 100%;
+            height: 100%;
+            padding: 0;
+            margin: 0 auto;
+            position: absolute;
+            inset: 0;
+            z-index: 5;
+            outline: none;
+        }
+
+        #splash {
+            position: fixed;
+            inset: 0;
+            z-index: 100;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 14px;
+            color: #fff;
+            background: radial-gradient(circle at 50% 35%, #3a2a1f 0%, #1b1310 70%);
+            transition: opacity .5s ease;
+        }
+        #splash.gone { opacity: 0; pointer-events: none; }
+        #splash img {
+            width: 112px;
+            height: 112px;
+            image-rendering: pixelated;
+            animation: bob 1.6s ease-in-out infinite;
+            filter: drop-shadow(0 8px 12px rgba(0,0,0,.45));
+        }
+        @keyframes bob { 50% { transform: translateY(-10px) rotate(-3deg); } }
+        #splash h1 { margin: 0; font-size: clamp(22px, 5vw, 34px); letter-spacing: .3px; text-align: center; }
+        #splash h1 span { color: #ffc93c; }
+        #splash-status { min-height: 1.2em; font-size: 14px; color: #d9c8b8; }
+        #splash-bar {
+            width: min(320px, 70vw);
+            height: 10px;
+            border-radius: 99px;
+            background: rgba(255,255,255,.12);
+            overflow: hidden;
+        }
+        #splash-fill {
+            width: 2%;
+            height: 100%;
+            border-radius: 99px;
+            background-image: linear-gradient(90deg, #ff9f1c, #ffd45c, #ff9f1c);
+            transition: width .25s ease;
+            background-size: 200% 100%;
+            animation: shimmer 1.2s linear infinite;
+        }
+        @keyframes shimmer { from { background-position: 200% 0; } to { background-position: 0 0; } }
+        #play {
+            margin-top: 6px;
+            padding: 16px 44px;
+            font: inherit;
+            font-size: 22px;
+            font-weight: bold;
+            color: #2b1a0e;
+            background: linear-gradient(180deg, #ffd45c, #ff9f1c);
+            border: 0;
+            border-radius: 99px;
+            box-shadow: 0 6px 0 #b8650f, 0 12px 24px rgba(0,0,0,.35);
+            cursor: pointer;
+            animation: pulse 1.4s ease-in-out infinite;
+        }
+        #play:active { transform: translateY(4px); box-shadow: 0 2px 0 #b8650f; }
+        @keyframes pulse { 50% { transform: scale(1.05); } }
+        #splash small { position: absolute; bottom: max(14px, env(safe-area-inset-bottom)); color: #8d7b6c; font-size: 12px; }
+
+        /* phones held upright: the game is wide, so suggest turning sideways */
+        #rotate {
+            display: none;
+            position: fixed;
+            inset: auto 0 0 0;
+            z-index: 50;
+            padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+            text-align: center;
+            color: #fff;
+            background: rgba(0,0,0,.72);
+            font-size: 15px;
+        }
+        @media (orientation: portrait) and (pointer: coarse) { #rotate { display: block; } }
+
+        /* pygbag's own widgets: keep them out of sight unless debugging */
+        #infobox, #transfer { position: fixed; left: -9999px; }
+    </style>
+
+    <script src="{{cookiecutter.cdn}}/browserfs.min.js"></script>
+</head>
+
+<body>
+    <div id="splash">
+        <img src="icon-192.png" alt="">
+        <h1>Mango: <span>The Virtual Lovebird</span></h1>
+        <div id="splash-bar"><div id="splash-fill"></div></div>
+        <div id="splash-status">Loading...</div>
+        <button id="play" hidden>Tap to play</button>
+        <small>In loving memory of Mango (2019&ndash;2024)</small>
+    </div>
+    <div id="rotate">&#x21bb; Turn your phone sideways for a bigger Mango</div>
+
+    <div id="transfer" align=center>
+        <div class="emscripten" id="status">Downloading...</div>
+        <div class="emscripten"><progress value="0" max="100" id="progress"></progress></div>
+    </div>
+
+    <canvas class="emscripten" id="canvas" width="1px" height="1px" oncontextmenu="event.preventDefault()" tabindex=1></canvas>
+    <canvas class="emscripten" id="canvas3d" width="{{cookiecutter.width}}px" height="{{cookiecutter.height}}px" oncontextmenu="event.preventDefault()" tabindex=1 hidden></canvas>
+
+    <div id="infobox">Loading, please wait ...</div>
+    <div id=html></div>
+
+    <div id=crt class=bottomright>
+        <div id="system" hidden>
+            <div class="button-container">
+                <button id="aiostop" disabled>AIO ⏏︎</button>
+                <button id="aiopaused_true" disabled>AIO ■</button>
+                <button id="aiopaused_false" disabled>AIO ▶</button>
+                <button id="pygame_mixer_music_pause" disabled>Music ■</button>
+            </div>
+            <div class="button-container">
+                <div id=load_min>min</div>
+                <div id=load_avg>avg</div>
+                <div id=load_max>max</div>
+                <button id="load_rst" disabled>RESET</button>
+            </div>
+            <div id="level">(battery level unknown)</div>
+            <div id="stateBattery">(charging state unknown)</div>
+        </div>
+        <div id=box class="emscripten_border" hidden=true>
+            <div id="info" class="trinfo"></div>
+            <iframe id="iframe" class="framed" name="iframe" width="470px" height="90%" frameborder="1"
+                sandbox="allow-same-origin allow-top-navigation allow-scripts allow-pointer-lock"
+                src="{{cookiecutter.cdn}}empty.html" scrolling="yes"></iframe>
+        </div>
+    </div>
+
+    <div id="dlg" hidden>
+        <input type="file" id="dlg_multifile" multiple accept="image/*">
+        <label for="dlg_multifile">Select files</label>
+    </div>
+
+    <div id="pyconsole">
+        <div id="terminal" tabIndex=1 align="left"></div>
+    </div>
+
+    <script type="application/javascript">
+    globalThis.__canvas_resized = (self, ecw, ech) => {}
+
+    async function custom_onload(debug_hidden) {
+        mango_mark("page loaded")
+        pyconsole.hidden = debug_hidden
+        system.hidden = debug_hidden
+        transfer.hidden = debug_hidden
+        info.hidden = debug_hidden
+        box.hidden = debug_hidden
+        if (!debug_hidden) document.getElementById("splash").remove()
+    }
+    function custom_prerun() { mango_mark("runtime downloaded") }
+    function custom_postrun() { mango_mark("python ready") }
+
+    function debug() {
+        python.config.debug = true
+        custom_onload(false)
+        Module.PyRun_SimpleString("shell.uptime()")
+        window_resize()
+    }
+
+    // The tap that starts the game also counts as the user gesture browsers need for sound
+    document.getElementById("play").addEventListener("click", () => {
+        document.getElementById("play").hidden = true
+        mango_status("Starting...")
+    })
+    </script>
+</body>
+</html>
