@@ -71,8 +71,7 @@ class TestMangoTamagotchi:
              patch('pygame.mouse.get_pos', return_value=(0, 0)), \
              patch('pygame.mouse.get_pressed', return_value=(False, False, False)):
             
-            game = MangoTamagotchi()
-            game.db_path = temp_db
+            game = MangoTamagotchi(db_path=temp_db)
             game.screen = MagicMock()
             game.clock = MagicMock()
             game.font = MagicMock()

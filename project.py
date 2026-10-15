@@ -1,1874 +1,427 @@
 """
-Mango: The Virtual Lovebird - CS50P Final Project v2.0
-A modern Tamagotchi-inspired virtual pet game featuring Mango the lovebird.
-Enhanced with real-world APIs and beautiful UI.
-"""
+Mango: The Virtual Lovebird
+A Tamagotchi-inspired virtual pet, in loving memory of my lovebird Mango.
+CS50P final project.
 
-# Import standard library modules first
+Runs on the desktop (python project.py) and in the browser via pygbag (main.py).
+"""
+import asyncio
+import os
 import random
 import time
-import json
-from datetime import datetime, timedelta
-import sys
-import os
-import math
-import struct
+from datetime import datetime
 
-# Try to import pygame-ce (installed via PEP 723 in main.py)
-# In pygbag, the wheel is installed before this module loads
-pygame = None
-try:
-    import pygame as _pygame
-    pygame = _pygame
-    print('[project.py] pygame imported successfully')
-except Exception as e:
-    print(f'[project.py] pygame import failed: {e}')
-    # Don't retry here - if pygame isn't available yet, 
-    # MangoTamagotchi.__init__ will handle it
-    pass
+import pygame
 
-# Import other optional dependencies
-try:
-    import sqlite3
-    SQLITE_AVAILABLE = True
-except Exception:
-    sqlite3 = None
-    SQLITE_AVAILABLE = False
+import db
+from api import APIHandler
+from assets import load_backgrounds, load_image, load_mango_sprites
+from audio import AudioManager
+from config import (
+    BLACK, DEFAULT_STATE, FPS, GRADIENT_END, GRADIENT_START, IS_WEB, NIGHT_END, NIGHT_START,
+    SCREEN_HEIGHT, SCREEN_WIDTH, SPRITES,
+)
+from particle_effects import ParticleSystem
 
-try:
-    import requests
-    REQUESTS_AVAILABLE = True
-except Exception:
-    requests = None
-    REQUESTS_AVAILABLE = False
 
-try:
-    from PIL import Image, ImageDraw
-    PIL_AVAILABLE = True
-except Exception:
-    Image = None
-    ImageDraw = None
-    PIL_AVAILABLE = False
-
-# Initialize Pygame ONLY if pygame is available
-# Skip mixer initialization at module level for WASM compatibility
-if pygame is not None:
-    try:
-        # In WASM/pygbag, avoid initializing mixer at module level
-        # It will be initialized on first user interaction
-        import sys
-        is_wasm = sys.platform == 'emscripten' or hasattr(sys, '_emscripten_info')
-        
-        if not is_wasm:
-            # Desktop only: pre-init mixer and init pygame
-            try:
-                pygame.mixer.pre_init(44100, -16, 2, 512)
-            except Exception as e:
-                print(f'[project.py] mixer pre_init failed: {e}')
-            
-            try:
-                pygame.init()
-                print('[project.py] pygame.init() succeeded (desktop)')
-            except Exception as e:
-                print(f'[project.py] pygame.init() failed: {e}')
-        else:
-            # WASM: Don't call pygame.init() at module level
-            # It will be called in __init__ after user interaction
-            print('[project.py] WASM detected - deferring pygame.init()')
-    except Exception as e:
-        print(f'[project.py] pygame.init() failed: {e}')
-        pass
-else:
-    print('[project.py] pygame is None, skipping initialization')
-
-# Constants
-SCREEN_WIDTH = 1000
-SCREEN_HEIGHT = 700
-FPS = 60
-
-# If running under pygbag / web, prefer the actual display surface size to
-# avoid letterboxing. This must be done after pygame is importable; we'll
-# attempt to update SCREEN_WIDTH/HEIGHT inside MangoTamagotchi.__init__ once
-# pygame becomes available.
-
-# Modern Color Palette
-WHITE = (255, 255, 255)
-BLACK = (20, 20, 20)
-DARK_GRAY = (40, 40, 40)
-LIGHT_GRAY = (220, 220, 220)
-GREEN = (76, 175, 80)
-RED = (244, 67, 54)
-BLUE = (33, 150, 243)
-YELLOW = (255, 193, 7)
-ORANGE = (255, 152, 0)
-PINK = (233, 30, 99)
-PURPLE = (156, 39, 176)
-TEAL = (0, 150, 136)
-LIGHT_BLUE = (173, 216, 230)
-DARK_BLUE = (25, 25, 112)
-GOLD = (255, 215, 0)
-SILVER = (192, 192, 192)
-BRONZE = (205, 127, 50)
-LIGHT_ORANGE = (255, 223, 190)
-
-# Gradient Colors
-GRADIENT_START = (135, 206, 235)  # Sky blue
-GRADIENT_END = (70, 130, 180)     # Steel blue
-NIGHT_START = (25, 25, 112)       # Midnight blue
-NIGHT_END = (72, 61, 139)         # Dark slate blue
-
-# Game states
 class GameState:
-    MAIN_MENU = "main_menu"
     TAMAGOTCHI_HUB = "tamagotchi_hub"
     FLAPPY_MANGO = "flappy_mango"
+    FEED = "feed"
+    TICKLE = "tickle"
     GAME_OVER = "game_over"
 
-try:
-    from api import APIHandler
-except Exception:
-    # Fallback to minimal inline implementation if the module isn't available
-    class APIHandler:
-        def __init__(self):
-            self.weather_data = None
-            self.bird_fact = None
-            self.last_weather_update = 0
-            self.last_bird_fact_update = 0
-            self.weather_update_interval = 1800
-            self.bird_fact_update_interval = 3600
-        def get_weather(self):
-            return {'temperature': 20, 'condition': 'sunny', 'description': 'Sunny weather, 20°C'}
-        def get_bird_fact(self):
-            return 'Birds are amazing creatures!'
-        def get_weather_mood_effect(self):
-            return 0
+
+def new_mango_state():
+    """Stats for a brand-new Mango."""
+    return dict(DEFAULT_STATE, last_updated=datetime.now().isoformat())
+
+
+def is_night_hour(hour):
+    """Night runs from 7 p.m. to 5:59 a.m."""
+    return hour < 6 or hour > 18
+
+
+def clamp(value, low=0, high=100):
+    return max(low, min(high, value))
+
 
 class MangoTamagotchi:
-    def _safe_set_mode(self, width, height, flags=None):
-        """Safe display initialization that works on desktop and in WASM.
-
-        On emscripten/pygbag, avoid unsupported flags.
-        """
-        # Ensure integers and reasonable defaults
-        try:
-            w = int(width)
-            h = int(height)
-        except Exception:
-            w, h = 1280, 720
-        # Detect web runtime
-        try:
-            import sys as _sys
-            is_web = getattr(_sys, 'platform', '') == 'emscripten' or hasattr(_sys, '_emscripten_info')
-        except Exception:
-            is_web = False
-        # On web runtimes, use simple set_mode without flags
-        if is_web:
-            try:
-                print(f'[WASM] Attempting set_mode({w}, {h}, 0)')
-                surf = pygame.display.set_mode((w, h), 0)
-                print(f'[WASM] set_mode succeeded')
-                return surf
-            except Exception as e:
-                print(f'[WASM] Failed to set display mode: {e}')
-                import traceback
-                traceback.print_exc()
-                return None
-        # Desktop / non-web: allow SCALED when available
-        try:
-            desktop_flags = 0
-            if flags:
-                desktop_flags = flags
-            else:
-                desktop_flags = getattr(pygame, 'SCALED', 0)
-        except Exception:
-            desktop_flags = getattr(pygame, 'SCALED', 0) if pygame is not None and hasattr(pygame, 'SCALED') else 0
-        try:
-            if desktop_flags:
-                return pygame.display.set_mode((w, h), desktop_flags)
-            else:
-                return pygame.display.set_mode((w, h))
-        except Exception:
-            try:
-                return pygame.display.set_mode((w, h))
-            except Exception:
-                return None
-
-    def __init__(self):
-        global pygame, SCREEN_WIDTH, SCREEN_HEIGHT
-        # Ensure pygame is imported and initialized here (after preloader may have
-        # installed local wheels). This avoids ModuleNotFoundError at module import.
-        if pygame is None:
-            try:
-                import pygame as _pygame
-                pygame = _pygame
-                # Initialize pygame subsystems carefully for WASM
-                print('[WASM] Starting pygame initialization...')
-                try:
-                    # Initialize only safe subsystems in WASM
-                    print('[WASM] Initializing display subsystem...')
-                    try:
-                        pygame.display.init()
-                        print('[WASM] display.init() OK')
-                    except Exception as e:
-                        print(f'[WASM] display.init() failed: {e}')
-                    
-                    print('[WASM] Initializing font subsystem...')
-                    try:
-                        pygame.font.init()
-                        print('[WASM] font.init() OK')
-                    except Exception as e:
-                        print(f'[WASM] font.init() failed: {e}')
-                    
-                    # Skip mixer.init() - will be done on user interaction
-                    print('[WASM] Skipping mixer.init() until user interaction')
-                except Exception as e:
-                    print(f'[WASM] pygame subsystem init failed: {e}')
-                    import traceback
-                    traceback.print_exc()
-            except Exception as e:
-                print(f'PYGBAG: pygame still not available at Mango init: {e}')
-
-        # Create the real display surface and a fixed-size logical surface.
-        # Use the safe initializer for the primary display surface.
-        # In WASM, avoid SCALED and other problematic flags
-        try:
-            import sys
-            is_wasm = sys.platform == 'emscripten' or hasattr(sys, '_emscripten_info')
-            if is_wasm:
-                flags = 0  # No special flags in WASM
-            else:
-                flags = getattr(pygame, 'SCALED', 0) if (pygame is not None and hasattr(pygame, 'SCALED')) else 0
-        except Exception:
-            flags = 0
-        self._display_screen = self._safe_set_mode(SCREEN_WIDTH, SCREEN_HEIGHT, flags)
-        
-        # Set window caption with error handling
-        try:
-            pygame.display.set_caption("Mango: The Virtual Lovebird v2.0")
-        except Exception as e:
-            print(f'[pygame] set_caption failed: {e}')
-        
-        # For pygbag/web, use the display surface directly as the screen
-        # For desktop, keep the separate logical surface for better scaling
-        try:
-            # Check if we're running in a web environment (pygbag)
-            import sys
-            is_web = hasattr(sys, '_emscripten_info') or 'pygbag' in str(type(self._display_screen))
-            if is_web and pygame is not None:
-                try:
-                    info = pygame.display.Info()
-                    if info.current_w and info.current_h:
-                        SCREEN_WIDTH = info.current_w
-                        SCREEN_HEIGHT = info.current_h
-                except Exception:
-                    pass
-
-            if is_web:
-                # In pygbag, draw directly to the display surface
-                self.screen = self._display_screen
-            else:
-                # Desktop: use separate logical surface
-                self.screen = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
-        except Exception:
-            # Fallback: use separate surface
-            try:
-                self.screen = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
-            except Exception:
-                self.screen = None
-            
+    def __init__(self, db_path="db/mango.db"):
+        pygame.init()
+        # SCALED lets the desktop window be resized/fullscreened while the game
+        # keeps drawing at 1000x700; the browser canvas is scaled by pygbag instead.
+        flags = 0 if IS_WEB else pygame.SCALED
+        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT), flags)
+        pygame.display.set_caption("Mango: The Virtual Lovebird")
         self.clock = pygame.time.Clock()
-        # Fullscreen tracking: starts windowed, can be toggled at runtime
-        self.fullscreen = False
-        self._windowed_size = (SCREEN_WIDTH, SCREEN_HEIGHT)
-        
-        # Modern fonts
-        try:
-            self.title_font = pygame.font.Font(None, 48)
-            self.large_font = pygame.font.Font(None, 32)
-            self.font = pygame.font.Font(None, 28)
-            self.small_font = pygame.font.Font(None, 20)
-            self.tiny_font = pygame.font.Font(None, 16)
-        except:
-            self.title_font = pygame.font.SysFont('Arial', 48, bold=True)
-            self.large_font = pygame.font.SysFont('Arial', 32)
-            self.font = pygame.font.SysFont('Arial', 28)
-            self.small_font = pygame.font.SysFont('Arial', 20)
-            self.tiny_font = pygame.font.SysFont('Arial', 16)
-        
+
+        self.title_font = pygame.font.Font(None, 48)
+        self.large_font = pygame.font.Font(None, 32)
+        self.font = pygame.font.Font(None, 28)
+        self.small_font = pygame.font.Font(None, 20)
+        self.tiny_font = pygame.font.Font(None, 16)
+
         self.state = GameState.TAMAGOTCHI_HUB
-        self.db_path = "db/mango.db"
-        
-        # Initialize API handler
+        self.running = True
+        self.pending_scene = None  # a mini-game coroutine waiting to run
+        self.animation_time = 0.0
+        self.hud_messages = []     # (text, expiry timestamp)
+        self.flash_until = 0.0
+
         self.api_handler = APIHandler()
-        
-        # UI animation variables
-        self.animation_time = 0
-        self.button_hover = {}
-        self.pulse_animation = 0
-        # Particle system for UI feedback (optional)
-        try:
-            from particle_effects import ParticleSystem
-            self.particle_system = ParticleSystem()
-        except Exception:
-            self.particle_system = None
-        # Audio volume controls (raised so sounds are audible by default)
-        self.master_volume = 0.9
-        self.sfx_volume = 0.9
-        self.music_volume = 0.6
-        # Do not start Flappy audio here during construction; defaults only
-        self._force_short_flap_in_flappy = False
-        # SFX visual indicator (last played SFX event)
-        self._last_sfx_event = None
-        
-        # Game variables
+        self.particle_system = ParticleSystem()
+
         self.last_stat_update = time.time()
         self.last_random_event = time.time()
         self.is_sick = False
         self.misbehavior_count = 0
-        self.high_score = self.get_high_score()
-        
-        # Day/night cycle
         self.current_hour = datetime.now().hour
-        self.is_night = self.current_hour < 6 or self.current_hour > 18
+        self.is_night = is_night_hour(self.current_hour)
 
-        # Initialize database and load or create Mango's state
-        try:
-            self.init_database()
-        except Exception:
-            pass
+        # Saved data
+        self.db_path = db_path
+        self.settings_path = os.path.join(os.path.dirname(db_path) or ".", "settings.json")
+        self.init_database()
+        self.mango_state = self.load_state() or new_mango_state()
+        self.save_state()
+        self.high_score = self.get_high_score()
 
-        try:
-            self.mango_state = self.load_state()
-            if not self.mango_state:
-                # create default state
-                self.mango_state = {
-                    'hunger': 80,
-                    'happiness': 70,
-                    'cleanliness': 60,
-                    'energy': 90,
-                    'health': 100,
-                    'age': 0,
-                    'last_updated': datetime.now().isoformat()
-                }
-                try:
-                    self.save_state()
-                except Exception:
-                    pass
-        except Exception:
-            # ensure attribute exists even on failure
-            self.mango_state = {
-                'hunger': 80,
-                'happiness': 70,
-                'cleanliness': 60,
-                'energy': 90,
-                'health': 100,
-                'age': 0,
-                'last_updated': datetime.now().isoformat()
-            }
+        # Images and sound
+        self.backgrounds = load_backgrounds()
+        self.mango_sprites = load_mango_sprites()
+        self.tree_texture = load_image(os.path.join(SPRITES, "tree.png"))
+        self.audio = AudioManager(**db.load_settings(self.settings_path))
+        self._gradients = {}
 
-        # Load background images and sprites
-        print('[__init__] Loading background images...')
-        try:
-            self.load_background_images()
-            print('[__init__] Background images loaded OK')
-        except Exception as e:
-            print(f'[__init__] Background images failed: {e}')
-            import traceback
-            traceback.print_exc()
-        
-        print('[__init__] Loading mango sprites...')
-        try:
-            self.load_mango_sprites()
-            print('[__init__] Mango sprites loaded OK')
-        except Exception as e:
-            print(f'[__init__] Mango sprites failed: {e}')
-            import traceback
-            traceback.print_exc()
+    # ---------- Saving ----------
 
-        # Audio manager: encapsulate mixer, sounds, channels and helpers
-        print('[__init__] Initializing audio...')
-        try:
-            from audio import AudioManager
-            self.audio = AudioManager(self)
-            print('[__init__] AudioManager created')
-            # mirror sounds dict for compatibility with rest of code
-            self.sounds = self.audio.sounds
-            # load/create sounds and channels
-            try:
-                self.audio.load_sounds()
-                print('[__init__] Sounds loaded OK')
-            except Exception as e:
-                print(f'[__init__] load_sounds failed: {e}')
-        except Exception as e:
-            # fallback: keep old loader present but empty
-            print(f'[__init__] AudioManager failed: {e}')
-            self.sounds = {}
-        # Track whether music has been started by a real user action (browsers block autoplay)
-        self._music_started = False
-
-        print('[__init__] __init__ complete!')
-
-        # music start flag: set when user has interacted (browsers block autoplay)
-        self._music_started = False
-
-        # HUD messages and screen flash timer
-        self.hud_messages = []  # list of (text, expiry_timestamp)
-        self.flash_until = 0.0
-
-        # Fade configuration (smaller/faster defaults for snappier transitions)
-        # You can tune these at runtime via game.fade_steps / game.fade_delay_ms
-        self.fade_steps = 8
-        self.fade_delay_ms = 10
-        
     def init_database(self):
-        """Initialize the SQLite database with schema."""
-        try:
-            # Delegate to db helper for clarity
-            from db import init_database as _init_db
-            _init_db(self.db_path, schema_path='schema.sql')
-        except Exception:
-            # fallback to original inline behavior if helper unavailable
-            try:
-                os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-                conn = sqlite3.connect(self.db_path)
-                cursor = conn.cursor()
-                with open('schema.sql', 'r') as f:
-                    schema = f.read()
-                    cursor.executescript(schema)
-                conn.commit()
-                conn.close()
-            except Exception:
-                pass
-    
+        db.init_database(self.db_path)
+
     def save_state(self):
-        """Save Mango's current state to database."""
-        try:
-            from db import save_state as _save_state
-            _save_state(self.db_path, self.mango_state)
-        except Exception:
-            try:
-                conn = sqlite3.connect(self.db_path)
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM mango_state")
-                cursor.execute(
-                    """
-                    INSERT INTO mango_state 
-                    (hunger, happiness, cleanliness, energy, health, age, last_updated)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        self.mango_state['hunger'],
-                        self.mango_state['happiness'],
-                        self.mango_state['cleanliness'],
-                        self.mango_state['energy'],
-                        self.mango_state['health'],
-                        self.mango_state['age'],
-                        datetime.now().isoformat(),
-                    ),
-                )
-                conn.commit()
-                conn.close()
-            except Exception:
-                pass
-    
+        db.save_state(self.db_path, self.mango_state)
+
     def load_state(self):
-        """Load Mango's state from database."""
-        try:
-            from db import load_state as _load_state
-            return _load_state(self.db_path)
-        except Exception:
-            try:
-                conn = sqlite3.connect(self.db_path)
-                cursor = conn.cursor()
-                cursor.execute("SELECT * FROM mango_state ORDER BY id DESC LIMIT 1")
-                result = cursor.fetchone()
-                conn.close()
-                if result:
-                    return {
-                        'hunger': result[1],
-                        'happiness': result[2],
-                        'cleanliness': result[3],
-                        'energy': result[4],
-                        'health': result[5],
-                        'age': result[6],
-                        'last_updated': result[7]
-                    }
-            except Exception:
-                pass
-        return None
-    
+        return db.load_state(self.db_path)
+
+    def save_score(self, score):
+        db.save_score(self.db_path, score)
+        self.high_score = max(self.high_score, score)
+
+    def get_high_score(self):
+        return db.get_high_score(self.db_path)
+
+    def save_settings(self):
+        db.save_settings(self.settings_path, self.audio.volumes())
+
+    # ---------- Caring for Mango ----------
+
     def feed_mango(self):
         """Feed Mango to increase hunger."""
-        if self.mango_state['hunger'] < 100:
-            self.mango_state['hunger'] = min(100, self.mango_state['hunger'] + 25)
-            self.mango_state['happiness'] = min(100, self.mango_state['happiness'] + 5)
-            self.save_state()
-            return True
-        return False
-    
+        if self.mango_state["hunger"] >= 100:
+            return False
+        self.mango_state["hunger"] = clamp(self.mango_state["hunger"] + 25)
+        self.mango_state["happiness"] = clamp(self.mango_state["happiness"] + 5)
+        self.save_state()
+        return True
+
     def bathe_mango(self):
         """Bathe Mango to increase cleanliness."""
-        if self.mango_state['cleanliness'] < 100:
-            self.mango_state['cleanliness'] = min(100, self.mango_state['cleanliness'] + 30)
-            self.mango_state['happiness'] = min(100, self.mango_state['happiness'] + 10)
-            self.save_state()
-            return True
-        return False
-    
+        if self.mango_state["cleanliness"] >= 100:
+            return False
+        self.mango_state["cleanliness"] = clamp(self.mango_state["cleanliness"] + 30)
+        self.mango_state["happiness"] = clamp(self.mango_state["happiness"] + 10)
+        self.save_state()
+        return True
+
     def play_with_mango(self):
-        """Play with Mango to increase happiness."""
-        if self.mango_state['energy'] > 10:
-            self.mango_state['happiness'] = min(100, self.mango_state['happiness'] + 20)
-            self.mango_state['energy'] = max(0, self.mango_state['energy'] - 15)
-            self.save_state()
-            return True
-        return False
-    
+        """Play with Mango to increase happiness (costs energy)."""
+        if self.mango_state["energy"] <= 10:
+            return False
+        self.mango_state["happiness"] = clamp(self.mango_state["happiness"] + 20)
+        self.mango_state["energy"] = clamp(self.mango_state["energy"] - 15)
+        self.save_state()
+        return True
+
     def rest_mango(self):
         """Let Mango rest to restore energy."""
-        if self.mango_state['energy'] < 100:
-            self.mango_state['energy'] = min(100, self.mango_state['energy'] + 30)
-            self.save_state()
-            return True
-        return False
-    
+        if self.mango_state["energy"] >= 100:
+            return False
+        self.mango_state["energy"] = clamp(self.mango_state["energy"] + 30)
+        self.save_state()
+        return True
+
     def give_medicine(self):
-        """Give medicine to heal Mango."""
-        # Give medicine and fully restore health to 100
-        # Medicine can now be given regardless of sickness state
-        self.mango_state['health'] = 100
+        """Fully heal Mango and lift any critically low stats to 25."""
+        self.mango_state["health"] = 100
         self.is_sick = False
-
-        for k in ('hunger', 'cleanliness', 'energy'):
-            if self.mango_state[k] < 25:
-                self.mango_state[k] = 25
-
+        for stat in ("hunger", "cleanliness", "energy"):
+            self.mango_state[stat] = max(self.mango_state[stat], 25)
         self.last_stat_update = time.time()
-
-        # Play medicine sound if available (non-fatal)
-        try:
-            # delegate to AudioManager for consistent behavior
-            try:
-                self._play_sfx('medicine')
-            except Exception:
-                if 'medicine' in self.sounds:
-                    try:
-                        self.sounds['medicine'].play()
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-
-        # HUD message and soft flash for feedback
-        self.hud_messages.append(("Medicine used!", time.time() + 2.0))
+        self.audio.play_sfx("medicine")
+        self.show_message("Medicine used!")
         self.flash_until = time.time() + 0.25
-
         self.save_state()
         return True
 
     def discipline(self):
-        """Start the tickle minigame (replaces old discipline action)."""
-        try:
-            from tickle_minigame import play_tickle_minigame as _play
-            return _play(self, GameState.TAMAGOTCHI_HUB, GameState.TAMAGOTCHI_HUB)
-        except Exception:
-            # Fallback to legacy discipline behavior
-            try:
-                if self.misbehavior_count > 0:
-                    self.misbehavior_count = max(0, self.misbehavior_count - 1)
-                    self.mango_state['happiness'] = max(0, self.mango_state['happiness'] - 5)
-                    self.save_state()
-                    return True
-            except Exception:
-                pass
-        return False
-    
+        """Calm a misbehaving Mango down (costs a little happiness)."""
+        if self.misbehavior_count <= 0:
+            return False
+        self.misbehavior_count -= 1
+        self.mango_state["happiness"] = clamp(self.mango_state["happiness"] - 5)
+        self.save_state()
+        return True
+
+    # ---------- Time passing ----------
+
     def age_mango(self):
-        """Age Mango based on time passed."""
-        current_time = datetime.now()
-        last_updated = datetime.fromisoformat(self.mango_state['last_updated'])
-        hours_passed = (current_time - last_updated).total_seconds() / 3600
-        
-        # Age Mango every 24 hours
-        if hours_passed >= 24:
-            self.mango_state['age'] += 1
-            self.mango_state['last_updated'] = current_time.isoformat()
+        """Mango has a birthday every 24 hours."""
+        last_birthday = datetime.fromisoformat(self.mango_state["last_updated"])
+        if (datetime.now() - last_birthday).total_seconds() >= 24 * 3600:
+            self.mango_state["age"] += 1
+            self.mango_state["last_updated"] = datetime.now().isoformat()
             self.save_state()
-    
+
     def update_stats(self):
-        """Update Mango's stats over time."""
-        current_time = time.time()
-        time_diff = current_time - self.last_stat_update
-        
-        # Update stats every 30 seconds (tests use ~35s) for quicker decay in game/testing
-        if time_diff >= 30:
-            # Natural decay (much slower)
-            self.mango_state['hunger'] = max(0, self.mango_state['hunger'] - 1)
-            self.mango_state['happiness'] = max(0, self.mango_state['happiness'] - 1)
-            self.mango_state['cleanliness'] = max(0, self.mango_state['cleanliness'] - 1)
-            self.mango_state['energy'] = max(0, self.mango_state['energy'] - 1)
-            
-            # Weather effects on mood (apply only negative effects here so
-            # natural decay always results in same-or-lower happiness; positive
-            # weather bonuses are omitted to keep auto-decay deterministic.)
-            weather_mood = self.api_handler.get_weather_mood_effect() or 0
-            if weather_mood < 0:
-                self.mango_state['happiness'] = max(0, min(100,
-                    self.mango_state['happiness'] + weather_mood))
-            
-            # Health decreases if other stats are too low
-            if (self.mango_state['hunger'] <= 10 or 
-                self.mango_state['cleanliness'] <= 10 or 
-                self.mango_state['energy'] <= 10):
-                self.mango_state['health'] = max(0, self.mango_state['health'] - 3)
-            # 👉 New: if health gets critically low, Mango becomes sick
-            if self.mango_state['health'] <= 30 and not self.is_sick:
-                self.is_sick = True
-            
-            # Check for random events
-            self.check_random_events()
-            
-            self.last_stat_update = current_time
-            self.save_state()
+        """Every 30 seconds, stats drop a little; neglect hurts Mango's health."""
+        now = time.time()
+        if now - self.last_stat_update < 30:
+            return
+        for stat in ("hunger", "happiness", "cleanliness", "energy"):
+            self.mango_state[stat] = clamp(self.mango_state[stat] - 1)
 
-    def _apply_volume_settings(self):
-        """Apply current master/music/sfx volume settings to mixer and loaded sounds."""
-        try:
-            if pygame.mixer.get_init():
-                try:
-                    pygame.mixer.music.set_volume(self.music_volume * self.master_volume)
-                except Exception:
-                    pass
-            # apply to loaded sounds
-            for s in list(self.sounds.keys()):
-                try:
-                    if self.sounds.get(s):
-                        self.sounds[s].set_volume(self.sfx_volume * self.master_volume)
-                except Exception:
-                    pass
+        # Bad weather can dampen Mango's mood (good weather doesn't raise it)
+        weather_mood = self.api_handler.get_weather_mood_effect() or 0
+        if weather_mood < 0:
+            self.mango_state["happiness"] = clamp(self.mango_state["happiness"] + weather_mood)
 
-            # Also apply to any dedicated channels we created
-            try:
-                for k, ch in getattr(self, '_sfx_channels', {}).items():
-                    if ch:
-                        try:
-                            ch.set_volume(self.sfx_volume * self.master_volume)
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-        except Exception:
-            pass
+        if min(self.mango_state[s] for s in ("hunger", "cleanliness", "energy")) <= 10:
+            self.mango_state["health"] = clamp(self.mango_state["health"] - 3)
+        if self.mango_state["health"] <= 30:
+            self.is_sick = True
 
+        self.check_random_events()
+        self.last_stat_update = now
+        self.save_state()
 
-    def _ensure_audio_ready(self):
-        """Delegates to AudioManager.ensure_audio_ready if available."""
-        try:
-            if getattr(self, 'audio', None):
-                return self.audio.ensure_audio_ready()
-        except Exception:
-            pass
-        return False
-
-    def _write_short_tone(self, path, freq=1500, duration_ms=160, volume=1.0):
-        try:
-            if getattr(self, 'audio', None):
-                return self.audio.write_short_tone(path, freq=freq, duration_ms=duration_ms, volume=volume)
-        except Exception:
-            pass
-        return False
-
-    def show_click_to_start(self):
-        """Draw a simple CLICK TO START splash and wait for first gesture.
-
-        This helps browsers to get a user gesture before attempting audio.
-        """
-        try:
-            if not pygame:
-                return
-            try:
-                font = pygame.font.SysFont(None, 72)
-            except Exception:
-                try:
-                    pygame.font.init()
-                except Exception:
-                    pass
-                try:
-                    font = pygame.font.SysFont(None, 72)
-                except Exception:
-                    return
-            msg = font.render("CLICK TO START", True, WHITE)
-            # center message
-            w, h = (SCREEN_WIDTH, SCREEN_HEIGHT)
-            try:
-                if self.screen:
-                    w, h = self.screen.get_size()
-            except Exception:
-                pass
-            x = (w - msg.get_width()) // 2
-            y = (h - msg.get_height()) // 2
-            try:
-                if self.screen:
-                    self.screen.fill(BLACK)
-                    self.screen.blit(msg, (x, y))
-                    try:
-                        pygame.display.flip()
-                    except Exception:
-                        try:
-                            pygame.display.update()
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-            # Wait for user gesture
-            clicked = False
-            start = time.time()
-            while not clicked and (time.time() - start) < 30:
-                try:
-                    for e in pygame.event.get():
-                        if e.type in (pygame.MOUSEBUTTONDOWN, pygame.KEYDOWN):
-                            clicked = True
-                            # initialize audio on first gesture
-                            try:
-                                if getattr(self, 'audio', None):
-                                    self.audio.ensure_audio()
-                            except Exception:
-                                pass
-                except Exception:
-                    break
-                try:
-                    pygame.time.wait(10)
-                except Exception:
-                    break
-        except Exception:
-            pass
-
-    def _write_thump(self, path, duration_ms=220, volume=0.9):
-        try:
-            if getattr(self, 'audio', None):
-                return self.audio.write_thump(path, duration_ms=duration_ms, volume=volume)
-        except Exception:
-            pass
-        return False
-    
-    def load_background_images(self):
-        """Load background images for hub and flappy mango."""
-        try:
-            from assets import load_background_images as _load_bg
-            _load_bg(self)
-        except Exception:
-            # fallback to inline loader
-            self.hub_background = None
-            self.flappy_background = None
-            try:
-                hub_bg_path = "assets/backgrounds/hub_bg.jpg"
-                if os.path.exists(hub_bg_path):
-                    self.hub_background = pygame.image.load(hub_bg_path)
-                    self.hub_background = pygame.transform.scale(self.hub_background, (SCREEN_WIDTH, SCREEN_HEIGHT))
-            except Exception:
-                self.hub_background = None
-            try:
-                flappy_bg_path = "assets/backgrounds/flappy_bg.jpg"
-                if os.path.exists(flappy_bg_path):
-                    self.flappy_background = pygame.image.load(flappy_bg_path)
-                    self.flappy_background = pygame.transform.scale(self.flappy_background, (SCREEN_WIDTH, SCREEN_HEIGHT))
-            except Exception:
-                self.flappy_background = None
-    
-    def load_mango_sprites(self):
-        """Load Mango sprite images."""
-        try:
-            from assets import load_mango_sprites as _load_sprites
-            _load_sprites(self)
-        except Exception:
-            # fallback to original inline loader if helper unavailable
-            self.mango_sprites = {}
-            sprite_files = {
-                'idle': 'mango_idle.png',
-                'happy': 'mango_happy.png',
-                'sad': 'mango_sad.png',
-                'tired': 'mango_tired.png',
-                'dirty': 'mango_dirty.png',
-                'flying': 'mango_flying.png',
-            }
-
-            def load_and_prepare(path, size=(100, 100)):
-                try:
-                    img = Image.open(path).convert('RGBA')
-                    bbox = img.split()[-1].getbbox()
-                    if bbox:
-                        img = img.crop(bbox)
-                    img.thumbnail(size, Image.LANCZOS)
-                    canvas = Image.new('RGBA', size, (0, 0, 0, 0))
-                    x = (size[0] - img.width) // 2
-                    y = (size[1] - img.height) // 2
-                    canvas.paste(img, (x, y), img)
-                    try:
-                        alpha = canvas.split()[-1]
-                        avg = sum(alpha.getdata()) / (size[0] * size[1])
-                        if avg < 60:
-                            def boost(a):
-                                return min(255, int(a * 1.6))
-                            alpha = alpha.point(boost)
-                            canvas.putalpha(alpha)
-                    except Exception:
-                        pass
-                    data = canvas.tobytes()
-                    surf = pygame.image.fromstring(data, size, 'RGBA')
-                    return surf.convert_alpha()
-                except Exception:
-                    try:
-                        s = pygame.image.load(path).convert_alpha()
-                        return pygame.transform.smoothscale(s, size)
-                    except Exception:
-                        return None
-
-            for mood, filename in sprite_files.items():
-                try:
-                    sprite_path = f"assets/sprites/{filename}"
-                    if os.path.exists(sprite_path):
-                        self.mango_sprites[mood] = load_and_prepare(sprite_path, (100, 100))
-                        print(f"Loaded sprite: {filename}")
-                    else:
-                        self.mango_sprites[mood] = None
-                        print(f"Sprite not found: {filename}")
-                except Exception as e:
-                    self.mango_sprites[mood] = None
-                    print(f"Error loading sprite {filename}: {e}")
-
-            flying2_path = "assets/sprites/mango_flying2.png"
-            try:
-                if os.path.exists(flying2_path):
-                    s2 = load_and_prepare(flying2_path, (100, 100))
-                    if s2:
-                        self.mango_sprites['flying2'] = s2
-                        print("Loaded sprite: mango_flying2.png (processed)")
-                    else:
-                        self.mango_sprites['flying2'] = self.mango_sprites.get('flying')
-                else:
-                    self.mango_sprites['flying2'] = self.mango_sprites.get('flying')
-            except Exception as e:
-                self.mango_sprites['flying2'] = self.mango_sprites.get('flying')
-                print(f"Error loading flying2 sprite: {e}")
-
-            if 'flying' not in self.mango_sprites:
-                self.mango_sprites['flying'] = None
-            if 'flying2' not in self.mango_sprites:
-                self.mango_sprites['flying2'] = None
-
-            self.tree_texture = None
-            tree_path = "assets/sprites/tree.png"
-            try:
-                if os.path.exists(tree_path):
-                    try:
-                        img = pygame.image.load(tree_path).convert_alpha()
-                        self.tree_texture = img
-                        print("Loaded tree texture for obstacles: tree.png")
-                    except Exception as e:
-                        print(f"Error loading tree texture: {e}")
-            except Exception:
-                pass
-
-    def load_mango_sounds(self):
-        """Load optional Mango sounds (non-fatal if missing).
-
-        Looks for assets/sounds/flap.wav and assets/sounds/medicine.wav.
-        If loading fails (no mixer or missing files), stores nothing but
-        keeps code paths safe.
-        """
-        # Delegated to AudioManager; kept for backward compatibility.
-        try:
-            if getattr(self, 'audio', None):
-                return self.audio.load_sounds()
-        except Exception:
-            pass
-        return None
-    def _play_music(self, key):
-        try:
-            if getattr(self, 'audio', None):
-                return self.audio.play_music(key)
-        except Exception:
-            pass
-        return None
-
-    def _stop_music(self):
-        try:
-            if getattr(self, 'audio', None):
-                return self.audio.stop_music()
-        except Exception:
-            pass
-        return None
-
-    def _play_sfx(self, key, maxtime=None):
-        """Safely play a short sound effect by key from self.sounds. Optionally limit duration (ms)."""
-        try:
-            if getattr(self, 'audio', None):
-                return self.audio.play_sfx(key, maxtime=maxtime)
-        except Exception:
-            pass
-        return None
-
-    def start_music(self, key='home'):
-        """Start background music in a user-initiated way.
-
-        Browsers block autoplay; call this from the first user click to allow audio.
-        """
-        try:
-            if getattr(self, '_music_started', False):
-                return
-            # Try to play the requested music key; fallbacks handled by AudioManager
-            try:
-                self._play_music(key)
-            except Exception:
-                pass
-            try:
-                self._music_started = True
-            except Exception:
-                pass
-        except Exception:
-            pass
-
-    def start_music(self):
-        """Mark that the user interacted and allow music to start.
-
-        Call this from the first user input (mouse click) so browsers
-        don't block audio autoplay. If we're in the hub, start the
-        hub music immediately.
-        """
-        try:
-            if getattr(self, '_music_started', False):
-                return
-            self._music_started = True
-            # If any music was queued by a mini-game while waiting for user input,
-            # play that instead; otherwise start hub/home music if we're in the hub.
-            try:
-                queued = getattr(self, '_queued_music', None)
-                if queued:
-                    try:
-                        self._play_music(queued)
-                    except Exception:
-                        pass
-                    # start watchdog if supported (forest uses watchdog)
-                    try:
-                        if getattr(self, 'audio', None) and queued:
-                            try:
-                                self.audio.start_watchdog(queued)
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-                    # clear queued music
-                    try:
-                        del self._queued_music
-                    except Exception:
-                        pass
-                else:
-                    try:
-                        if self.state == GameState.TAMAGOTCHI_HUB:
-                            try:
-                                self._play_music('home')
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-        except Exception:
-            pass
-
-    def _play_debug_tone(self, freq=800, duration_ms=300, volume=1.0):
-        """Play a short loud debug tone via mixer to test output path immediately."""
-        try:
-            if getattr(self, 'audio', None):
-                return self.audio.play_debug_tone(freq=freq, duration_ms=duration_ms, volume=volume)
-        except Exception:
-            pass
-        return None
-    
-    
-    def draw_gradient_background(self):
-        """Draw a beautiful gradient background."""
-        if self.is_night:
-            start_color = NIGHT_START
-            end_color = NIGHT_END
-        else:
-            start_color = GRADIENT_START
-            end_color = GRADIENT_END
-        
-        for y in range(SCREEN_HEIGHT):
-            ratio = y / SCREEN_HEIGHT
-            r = int(start_color[0] + (end_color[0] - start_color[0]) * ratio)
-            g = int(start_color[1] + (end_color[1] - start_color[1]) * ratio)
-            b = int(start_color[2] + (end_color[2] - start_color[2]) * ratio)
-            pygame.draw.line(self.screen, (r, g, b), (0, y), (SCREEN_WIDTH, y))
-    
-    def draw_hub_background(self):
-        """Draw the hub background (image or gradient)."""
-        if self.hub_background:
-            self.screen.blit(self.hub_background, (0, 0))
-            # Add a slight overlay for better text readability
-            overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
-            overlay.set_alpha(30)
-            overlay.fill(BLACK)
-            self.screen.blit(overlay, (0, 0))
-        else:
-            self.draw_gradient_background()
-    
-    def draw_flappy_background(self):
-        """Draw the flappy mango background (image or gradient)."""
-        if self.flappy_background:
-            self.screen.blit(self.flappy_background, (0, 0))
-        else:
-            self.draw_gradient_background()
-    
-    def draw_modern_button(self, rect, text, color, hover_color, text_color=WHITE, hover=False):
-        try:
-            from ui_helpers import draw_modern_button as _dmb
-            return _dmb(self, rect, text, color, hover_color, text_color, hover)
-        except Exception:
-            # Keep a lightweight fallback to avoid breaking runtime during transition
-            try:
-                shadow_rect = rect.copy()
-                shadow_rect.x += 3
-                shadow_rect.y += 3
-                pygame.draw.rect(self.screen, (0, 0, 0, 50), shadow_rect, border_radius=8)
-            except Exception:
-                pass
-            button_color = hover_color if hover else color
-            try:
-                pygame.draw.rect(self.screen, button_color, rect, border_radius=8)
-            except Exception:
-                pass
-            try:
-                border_color = WHITE if hover else LIGHT_GRAY
-                pygame.draw.rect(self.screen, border_color, rect, 2, border_radius=8)
-            except Exception:
-                pass
-            try:
-                text_surface = self.small_font.render(text, True, text_color)
-                text_rect = text_surface.get_rect(center=rect.center)
-                self.screen.blit(text_surface, text_rect)
-            except Exception:
-                pass
-            return rect
-    
-    def draw_modern_progress_bar(self, x, y, width, height, value, max_value, color, bg_color=DARK_GRAY):
-        try:
-            from ui_helpers import draw_modern_progress_bar as _dmpb
-            return _dmpb(self, x, y, width, height, value, max_value, color, bg_color)
-        except Exception:
-            # Lightweight fallback for transition
-            try:
-                bg_rect = pygame.Rect(x, y, width, height)
-                pygame.draw.rect(self.screen, bg_color, bg_rect, border_radius=max(1, height//2))
-                progress_width = int((value / float(max_value)) * width) if max_value else 0
-                if progress_width > 0:
-                    progress_rect = pygame.Rect(x, y, progress_width, height)
-                    pygame.draw.rect(self.screen, color, progress_rect, border_radius=max(1, height//2))
-                pygame.draw.rect(self.screen, WHITE, bg_rect, 2, border_radius=max(1, height//2))
-            except Exception:
-                pass
-    
     def check_random_events(self):
-        """Check for random events like sickness or misbehavior."""
-        current_time = time.time()
-        time_diff = current_time - self.last_random_event
-        
-        # Random events every 2 minutes
-        if time_diff >= 120:
-            if random.random() < 0.3:  # 30% chance
-                event = random.choice(['sick', 'misbehavior'])
-                if event == 'sick' and not self.is_sick:
-                    self.is_sick = True
-                    self.mango_state['health'] = max(0, self.mango_state['health'] - 20)
-                elif event == 'misbehavior':
-                    self.misbehavior_count += 1
-                    self.mango_state['happiness'] = max(0, self.mango_state['happiness'] - 10)
-            
-            self.last_random_event = current_time
-    
+        """Every 2 minutes there's a 30% chance Mango gets sick or misbehaves."""
+        now = time.time()
+        if now - self.last_random_event < 120:
+            return
+        if random.random() < 0.3:
+            event = random.choice(["sick", "misbehavior"])
+            if event == "sick" and not self.is_sick:
+                self.is_sick = True
+                self.mango_state["health"] = clamp(self.mango_state["health"] - 20)
+            elif event == "misbehavior":
+                self.misbehavior_count += 1
+                self.mango_state["happiness"] = clamp(self.mango_state["happiness"] - 10)
+        self.last_random_event = now
+
     def get_mango_mood(self):
         """Determine Mango's current mood based on stats."""
         if self.is_sick:
             return "sick"
-        elif self.mango_state['cleanliness'] < 30:
+        if self.mango_state["cleanliness"] < 30:
             return "dirty"
-        elif self.mango_state['energy'] < 20:
+        if self.mango_state["energy"] < 20:
             return "tired"
-        elif self.mango_state['happiness'] > 70:
+        if self.mango_state["happiness"] > 70:
             return "happy"
-        elif self.mango_state['happiness'] < 30:
+        if self.mango_state["happiness"] < 30:
             return "sad"
-        else:
-            return "neutral"
-    
+        return "neutral"
+
     def is_game_over(self):
-        """Check if game is over (health = 0)."""
-        return self.mango_state['health'] <= 0
-    
+        return self.mango_state["health"] <= 0
+
     def restart_game(self):
-        """Restart the game with a new Mango."""
-        self.mango_state = {
-            'hunger': 80,
-            'happiness': 70,
-            'cleanliness': 60,
-            'energy': 90,
-            'health': 100,
-            'age': 0,
-            'last_updated': datetime.now().isoformat()
-        }
+        """Welcome a brand-new Mango."""
+        self.mango_state = new_mango_state()
         self.is_sick = False
         self.misbehavior_count = 0
+        self.last_stat_update = time.time()
+        self.state = GameState.TAMAGOTCHI_HUB
         self.save_state()
-    
-    def save_score(self, score):
-        """Save Flappy Mango score to database."""
-        try:
-            from db import save_score as _save_score
-            try:
-                _save_score(self.db_path, score)
-            except Exception:
-                pass
-        except Exception:
-            try:
-                conn = sqlite3.connect(self.db_path)
-                cursor = conn.cursor()
-                cursor.execute("INSERT INTO scores (score) VALUES (?)", (score,))
-                conn.commit()
-                conn.close()
-            except Exception:
-                pass
-        # Update high score
-        try:
-            if score > self.high_score:
-                self.high_score = score
-        except Exception:
-            pass
-    
-    def get_high_score(self):
-        """Get the highest score from database."""
-        try:
-            from db import get_high_score as _get_high
-            try:
-                return int(_get_high(self.db_path) or 0)
-            except Exception:
-                return 0
-        except Exception:
-            try:
-                conn = sqlite3.connect(self.db_path)
-                cursor = conn.cursor()
-                cursor.execute("SELECT MAX(score) FROM scores")
-                result = cursor.fetchone()
-                conn.close()
-                return result[0] if result and result[0] else 0
-            except Exception:
-                return 0
-    
-    def play_flappy_mango(self):
-        """Delegate to the Flappy mini-game implementation in flappy.py.
 
-        The full Flappy logic was moved to a separate module to keep project.py small.
-        We pass `self` so the flappy module can call back into game helpers.
-        """
-        # Directly delegate to the flappy module. Let exceptions surface so
-        # they are easier to diagnose during development rather than silently
-        # falling back to legacy behavior.
-        from flappy import play_flappy_mango as _play
-        return _play(self, GameState.FLAPPY_MANGO, GameState.TAMAGOTCHI_HUB)
+    def show_message(self, text, seconds=1.8):
+        self.hud_messages.append((text, time.time() + seconds))
+
+    # ---------- Mini-games ----------
+
+    def start_minigame(self, name):
+        """Queue a mini-game; the main loop runs it on the next frame."""
+        self.pending_scene = self._run_minigame(name)
+        return True
 
     def play_feed_minigame(self):
-        """Delegate to feed_minigame.play_feed_minigame."""
-        from feed_minigame import play_feed_minigame as _play
-        return _play(self, GameState.TAMAGOTCHI_HUB, GameState.TAMAGOTCHI_HUB)
-    
-    def draw_home_screen(self):
-        # Delegate fully to the hub_ui module which owns hub rendering.
-        from hub_ui import draw_home_screen as _dh
-        return _dh(self)
-    
-    def handle_click(self, pos):
-        """Delegate hub click handling to hub_ui.handle_click."""
-        from hub_ui import handle_click as _hc
-        return _hc(self, pos)
-    
-    async def run(self):
-        """Main game loop."""
-        # If enabled, show click-to-start splash so browsers get a user gesture
-        try:
-            if getattr(self, '_show_click_to_start', False):
-                try:
-                    # keep this non-blocking for desktop tests that may not pump events
-                    self._show_click_to_start = False
-                    # show the splash and block until gesture or timeout
-                    try:
-                        self.show_click_to_start()
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        running = True
-        
-        while running:
-            # Compute logical mouse position from display coords for scaled rendering
-            try:
-                disp = getattr(self, '_display_screen', None)
-                disp_w, disp_h = disp.get_size() if disp else (self.screen.get_width(), self.screen.get_height())
-            except Exception:
-                disp_w, disp_h = (self.screen.get_width(), self.screen.get_height())
-            try:
-                logical_w, logical_h = self.screen.get_size()
-            except Exception:
-                logical_w, logical_h = (SCREEN_WIDTH, SCREEN_HEIGHT)
+        return self.start_minigame("feed")
 
-            # store logical mouse pos on the game instance for UI modules to use
-            try:
-                mx_disp, my_disp = pygame.mouse.get_pos()
-                if disp_w and disp_h:
-                    mx_log = int(mx_disp * logical_w / float(disp_w))
-                    my_log = int(my_disp * logical_h / float(disp_h))
-                else:
-                    mx_log, my_log = mx_disp, my_disp
-                self._mouse_pos_logical = (mx_log, my_log)
-            except Exception:
-                self._mouse_pos_logical = pygame.mouse.get_pos()
+    def play_tickle_minigame(self):
+        return self.start_minigame("tickle")
 
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    running = False
-                elif event.type == pygame.MOUSEBUTTONDOWN:
-                    if event.button == 1:  # Left click
-                        # map display coords to logical coords before handling
-                        try:
-                            px, py = event.pos
-                            if disp_w and disp_h:
-                                lx = int(px * logical_w / float(disp_w))
-                                ly = int(py * logical_h / float(disp_h))
-                            else:
-                                lx, ly = px, py
-                            self.handle_click((lx, ly))
-                        except Exception:
-                            self.handle_click(event.pos)
-                        # Browsers require a user gesture to unlock audio. Ensure
-                        # the mixer is initialized on first click/key so audio can play.
-                        try:
-                            if getattr(self, 'audio', None):
-                                try:
-                                    self.audio.ensure_audio()
-                                except Exception:
-                                    pass
-                        except Exception:
-                            pass
-                        # Mark music started and attempt to start hub music
-                        try:
-                            self.start_music()
-                        except Exception:
-                            pass
-                elif event.type == pygame.MOUSEMOTION:
-                    try:
-                        mx, my = event.pos
-                        # convert to logical coords for slider dragging
-                        try:
-                            if disp_w and disp_h:
-                                mx = int(mx * logical_w / float(disp_w))
-                                my = int(my * logical_h / float(disp_h))
-                        except Exception:
-                            pass
-                        for key, meta in self._audio_sliders.items():
-                            if meta.get('dragging') and meta.get('rect'):
-                                r = meta['rect']
-                                rel = (mx - r.x) / float(r.w)
-                                val = max(0.0, min(1.0, rel))
-                                if key == 'master':
-                                    self.master_volume = val
-                                elif key == 'music':
-                                    self.music_volume = val
-                                elif key == 'sfx':
-                                    self.sfx_volume = val
-                                # apply volumes live
-                                try:
-                                    pygame.mixer.music.set_volume(self.music_volume * self.master_volume)
-                                except Exception:
-                                    pass
-                                try:
-                                    for s in ['flap', 'medicine', 'button', 'chirp', 'thump']:
-                                        if s in self.sounds and self.sounds[s]:
-                                            try:
-                                                self.sounds[s].set_volume(self.sfx_volume * self.master_volume)
-                                            except Exception:
-                                                pass
-                                except Exception:
-                                    pass
-                    except Exception:
-                        pass
-                elif event.type == pygame.MOUSEBUTTONUP:
-                    try:
-                        if event.button == 1:
-                            # stop any dragging and persist settings
-                            changed = False
-                            for key, meta in self._audio_sliders.items():
-                                if meta.get('dragging'):
-                                    meta['dragging'] = False
-                                    changed = True
-                            if changed:
-                                import json as _json
-                                with open(self._settings_path, 'w') as _f:
-                                    _json.dump({'master_volume': self.master_volume, 'music_volume': self.music_volume, 'sfx_volume': self.sfx_volume}, _f)
-                    except Exception:
-                        pass
-                elif event.type == pygame.KEYDOWN:
-                    # Any key press should also be considered a user gesture
-                    try:
-                        if getattr(self, 'audio', None):
-                            try:
-                                self.audio.ensure_audio()
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-                    # Fullscreen toggles: F11 or Alt+Enter
-                    try:
-                        if event.key == pygame.K_F11:
-                            self.toggle_fullscreen()
-                            continue
-                        if event.key == pygame.K_RETURN and (event.mod & pygame.KMOD_ALT):
-                            self.toggle_fullscreen()
-                            continue
-                    except Exception:
-                        pass
-                    # Developer audio self-test: press T in the hub to play all SFX/music
-                    if event.key == pygame.K_t and self.state == GameState.TAMAGOTCHI_HUB:
-                        try:
-                            print("Audio self-test: playing flap, button, medicine, chirp, starting/stopping music...")
-                            if 'flap' in self.sounds:
-                                self._play_sfx('flap')
-                                pygame.time.delay(300)
-                            if 'button' in self.sounds:
-                                self._play_sfx('button')
-                                pygame.time.delay(300)
-                            if 'medicine' in self.sounds:
-                                self._play_sfx('medicine')
-                                pygame.time.delay(400)
-                            if 'chirp' in self.sounds:
-                                self._play_sfx('chirp')
-                                pygame.time.delay(300)
-                            # Play home music briefly then switch to forest
-                            self._play_music('home')
-                            pygame.time.delay(800)
-                            self._play_music('forest')
-                            pygame.time.delay(800)
-                            self._stop_music()
-                            print("Audio self-test complete.")
-                        except Exception as e:
-                            print(f"Audio self-test failed: {e}")
-                        continue
-                    if event.key == pygame.K_ESCAPE:
-                        running = False
-            
-            # Update game state
-            self.update_stats()
-            self.age_mango()
-            
-            # Force sickness if health is low (real-time check)
-            if self.mango_state['health'] <= 30 and not self.is_sick:
-                self.is_sick = True
-            
-            # Update day/night cycle
-            current_hour = datetime.now().hour
-            if current_hour != self.current_hour:
-                self.current_hour = current_hour
-                self.is_night = current_hour < 6 or current_hour > 18
-            
-            # Check game over
-            if self.is_game_over():
-                self.state = GameState.GAME_OVER
+    def play_flappy_mango(self):
+        return self.start_minigame("flappy")
 
-            # Update particle system
-            try:
-                if getattr(self, 'particle_system', None):
-                    self.particle_system.update(1.0 / float(FPS))
-            except Exception:
-                pass
+    async def _run_minigame(self, name):
+        import feed_minigame
+        import flappy
+        import tickle_minigame
 
-            # Advance a simple animation timer used by UI modules
-            try:
-                self.animation_time += 1.0 / float(FPS)
-            except Exception:
-                pass
-
-            # Draw current state
-            if self.state == GameState.TAMAGOTCHI_HUB:
-                self.draw_home_screen()
-                # Draw particle overlays on top of hub UI
-                try:
-                    if getattr(self, 'particle_system', None):
-                        self.particle_system.draw(self.screen)
-                except Exception:
-                    pass
-            elif self.state == GameState.GAME_OVER:
-                self.draw_game_over_screen()
-            
-            # Update display - simplified for pygbag compatibility
-            try:
-                # Check if we're using the display surface directly (pygbag)
-                if self.screen is self._display_screen:
-                    # Already drawing to display surface, just flip
-                    pygame.display.flip()
-                else:
-                    # Desktop: scale logical surface to display
-                    disp = getattr(self, '_display_screen', None)
-                    if disp is not None:
-                        # Smooth scale for nicer visuals when stretching
-                        try:
-                            scaled = pygame.transform.smoothscale(self.screen, disp.get_size())
-                        except Exception:
-                            scaled = pygame.transform.scale(self.screen, disp.get_size())
-                        disp.blit(scaled, (0, 0))
-                        pygame.display.flip()
-                    else:
-                        pygame.display.flip()
-            except Exception:
-                try:
-                    pygame.display.flip()
-                except Exception:
-                    pass
-            self.clock.tick(FPS)
-            # Essential for pygbag - yield control to browser
-            import asyncio
-            try:
-                await asyncio.sleep(0)
-            except:
-                pass
-        
-        try:
-            pygame.quit()
-        except Exception:
-            pass
-        # In embedded environments (pygbag) avoid calling sys.exit() which
-        # can terminate the module import/execution unexpectedly. Return from
-        # main instead and let the embedder handle process lifecycle.
-            try:
-                pygame.quit()
-            except Exception:
-                pass
-            # Do not call sys.exit() here - returning lets the caller (or pygbag) cleanly
-            # finish without forcibly exiting the process which can cause issues in WASM.
+        games = {
+            "feed": (feed_minigame.play_feed_minigame, GameState.FEED),
+            "tickle": (tickle_minigame.play_tickle_minigame, GameState.TICKLE),
+            "flappy": (flappy.play_flappy_mango, GameState.FLAPPY_MANGO),
+        }
+        play, state = games[name]
+        await self.fade(fade_in=False)
+        self.state = state
+        self.audio.play_music("forest")
+        await play(self)
+        if not self.running:
             return
-    
-    def draw_game_over_screen(self):
-        """Delegate the game-over screen drawing to hub_ui.draw_game_over_screen."""
-        from hub_ui import draw_game_over_screen as _dg
-        return _dg(self)
+        self.state = GameState.TAMAGOTCHI_HUB
+        self.audio.play_music("home")
+        self.particle_system.clear()
+        self.draw()
+        await self.fade(fade_in=True)
+
+    # ---------- Frame helpers (shared with the mini-games) ----------
+
+    async def next_frame(self):
+        """Show what was drawn, wait for the next frame, and let the browser breathe."""
+        pygame.display.flip()
+        self.clock.tick(FPS)
+        await asyncio.sleep(0)  # essential in the browser: hands control back to the page
+
+    def events(self):
+        """Return this frame's events, handling quitting and the audio unlock for every scene."""
+        events = pygame.event.get()
+        for event in events:
+            if event.type == pygame.QUIT:
+                self.running = False
+            elif event.type in (pygame.MOUSEBUTTONDOWN, pygame.KEYDOWN, pygame.FINGERDOWN):
+                self.audio.unlock()
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_F11:
+                self.toggle_fullscreen()
+        return events
+
+    async def fade(self, fade_in, frames=10):
+        """Fade the current screen to black (fade_in=False) or up from black (fade_in=True)."""
+        snapshot = self.screen.copy()
+        overlay = pygame.Surface(self.screen.get_size())
+        overlay.fill((0, 0, 0))
+        for i in range(1, frames + 1):
+            darkness = 255 * i // frames
+            overlay.set_alpha(255 - darkness if fade_in else darkness)
+            self.screen.blit(snapshot, (0, 0))
+            self.screen.blit(overlay, (0, 0))
+            await self.next_frame()
 
     def toggle_fullscreen(self):
-        """Toggle fullscreen mode. Uses the display's current resolution for fullscreen.
+        """Desktop only; in the browser the page handles the canvas size."""
+        if IS_WEB:
+            return False
+        pygame.display.toggle_fullscreen()
+        return True
 
-        We reset the display surface and keep `self.screen` referencing the new surface
-        so the rest of the code continues to use the correct size via `screen.get_width()`.
-        """
-        # Implement toggling with multiple fallbacks; return True on success
-        try:
-            # Smooth fade transition: fade out, change mode, fade in
-            disp = getattr(self, '_display_screen', None)
-            try:
-                start_size = disp.get_size() if disp else (self._windowed_size[0], self._windowed_size[1])
-            except Exception:
-                start_size = (self._windowed_size[0], self._windowed_size[1])
+    # ---------- Drawing ----------
 
-            enter_fs = not getattr(self, 'fullscreen', False)
+    def draw_gradient_background(self):
+        """Day or night sky gradient (cached, since it never changes)."""
+        key = "night" if self.is_night else "day"
+        if key not in self._gradients:
+            start, end = (NIGHT_START, NIGHT_END) if self.is_night else (GRADIENT_START, GRADIENT_END)
+            surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+            for y in range(SCREEN_HEIGHT):
+                t = y / SCREEN_HEIGHT
+                color = tuple(int(a + (b - a) * t) for a, b in zip(start, end))
+                pygame.draw.line(surface, color, (0, y), (SCREEN_WIDTH, y))
+            self._gradients[key] = surface
+        self.screen.blit(self._gradients[key], (0, 0))
 
-            steps = 10
-            delay_ms = 16
+    def draw_background(self, key):
+        """Draw a background image ('hub', 'flappy', 'feed'), or the sky gradient if it's missing."""
+        image = self.backgrounds.get(key)
+        if image is None:
+            self.draw_gradient_background()
+            return
+        self.screen.blit(image, (0, 0))
+        if key == "hub":
+            # darken slightly so text stays readable
+            if "hub_shade" not in self._gradients:
+                shade = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+                shade.set_alpha(30)
+                shade.fill(BLACK)
+                self._gradients["hub_shade"] = shade
+            self.screen.blit(self._gradients["hub_shade"], (0, 0))
 
-            # fade out (best-effort)
-            try:
-                for i in range(steps):
-                    alpha = int(255 * (i + 1) / float(steps))
-                    try:
-                        if disp is not None:
-                            try:
-                                scaled = pygame.transform.smoothscale(self.screen, disp.get_size())
-                            except Exception:
-                                scaled = pygame.transform.scale(self.screen, disp.get_size())
-                            disp.blit(scaled, (0, 0))
-                        overlay = pygame.Surface(start_size, pygame.SRCALPHA)
-                        overlay.fill((0, 0, 0, alpha))
-                        if disp is not None:
-                            try:
-                                disp.blit(overlay, (0, 0))
-                            except Exception:
-                                pass
-                            pygame.display.flip()
-                        else:
-                            try:
-                                pygame.display.flip()
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-                    try:
-                        pygame.time.delay(delay_ms)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+    def draw(self):
+        import hub_ui
 
-            result = False
-            if enter_fs:
-                info = pygame.display.Info()
-                w, h = info.current_w or self._windowed_size[0], info.current_h or self._windowed_size[1]
-                try:
-                    scaled_flag = getattr(pygame, 'SCALED', 0)
-                except Exception:
-                    scaled_flag = 0
-                try:
-                    fs_flag = getattr(pygame, 'FULLSCREEN', 0)
-                except Exception:
-                    fs_flag = 0
-                # try the straightforward fullscreen first
-                try:
-                    self.hud_messages.append(("Entering fullscreen...", time.time() + 1.5))
-                except Exception:
-                    pass
-                tried = False
-                try:
-                    self._display_screen = self._safe_set_mode(w, h, fs_flag)
-                    tried = True if self._display_screen is not None else False
-                except Exception:
-                    tried = False
-                if not tried:
-                    try:
-                        hwflags = fs_flag
-                        try:
-                            # Try a combination of hardware flags on desktop only
-                            hwflags = pygame.FULLSCREEN | pygame.HWSURFACE | pygame.DOUBLEBUF
-                        except Exception:
-                            hwflags = fs_flag
-                        self._display_screen = self._safe_set_mode(w, h, hwflags)
-                        tried = True
-                    except Exception:
-                        tried = False
-                if not tried:
-                    try:
-                        self._display_screen = self._safe_set_mode(w, h)
-                        tried = True
-                    except Exception:
-                        tried = False
-                if not tried:
-                    try:
-                        pygame.display.toggle_fullscreen()
-                        tried = True
-                    except Exception:
-                        tried = False
-                self.fullscreen = True if tried else getattr(self, 'fullscreen', False)
-                try:
-                    if tried:
-                        self.hud_messages.append(("Entered fullscreen", time.time() + 1.5))
-                    else:
-                        self.hud_messages.append(("Failed to enter fullscreen", time.time() + 1.5))
-                except Exception:
-                    pass
-                result = bool(tried)
-            else:
-                # leaving fullscreen: try restoring windowed size
-                try:
-                    window_flags = getattr(pygame, 'SCALED', 0)
-                except Exception:
-                    window_flags = 0
-                left_ok = False
-                try:
-                    self._display_screen = self._safe_set_mode(tuple(self._windowed_size)[0], tuple(self._windowed_size)[1], window_flags)
-                    left_ok = True
-                except Exception:
-                    try:
-                        pygame.display.toggle_fullscreen()
-                        left_ok = True
-                    except Exception:
-                        left_ok = False
-                self.fullscreen = False if left_ok else getattr(self, 'fullscreen', True)
-                try:
-                    if left_ok:
-                        self.hud_messages.append(("Exited fullscreen", time.time() + 1.5))
-                    else:
-                        self.hud_messages.append(("Failed to exit fullscreen", time.time() + 1.5))
-                except Exception:
-                    pass
-                result = bool(left_ok)
-
-            # fade in (best-effort)
-            try:
-                disp = getattr(self, '_display_screen', None)
-                end_size = disp.get_size() if disp else start_size
-            except Exception:
-                end_size = start_size
-            try:
-                for i in range(steps):
-                    alpha = int(255 * (1.0 - (i + 1) / float(steps)))
-                    try:
-                        if disp is not None:
-                            try:
-                                scaled = pygame.transform.smoothscale(self.screen, disp.get_size())
-                            except Exception:
-                                scaled = pygame.transform.scale(self.screen, disp.get_size())
-                            disp.blit(scaled, (0, 0))
-                        overlay = pygame.Surface(end_size, pygame.SRCALPHA)
-                        overlay.fill((0, 0, 0, alpha))
-                        if disp is not None:
-                            try:
-                                disp.blit(overlay, (0, 0))
-                            except Exception:
-                                pass
-                            pygame.display.flip()
-                        else:
-                            try:
-                                pygame.display.flip()
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-                    try:
-                        pygame.time.delay(delay_ms)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
-            return result
-
-        except Exception:
-            try:
-                pygame.display.toggle_fullscreen()
-                self.fullscreen = not getattr(self, 'fullscreen', False)
-            except Exception:
-                pass
-            return getattr(self, 'fullscreen', False)
-
-    def fade_out(self, steps=None, delay_ms=None):
-        """Fade the current logical screen out to black on the display."""
-        if steps is None:
-            steps = getattr(self, 'fade_steps', 12)
-        if delay_ms is None:
-            delay_ms = getattr(self, 'fade_delay_ms', 16)
-        try:
-            disp = getattr(self, '_display_screen', None)
-            try:
-                size = disp.get_size() if disp else (self.screen.get_width(), self.screen.get_height())
-            except Exception:
-                size = (self.screen.get_width(), self.screen.get_height())
-
-            # Render the current logical screen once to the display, then overlay
-            try:
-                if disp is not None:
-                    try:
-                        scaled = pygame.transform.smoothscale(self.screen, disp.get_size())
-                    except Exception:
-                        scaled = pygame.transform.scale(self.screen, disp.get_size())
-                    disp.blit(scaled, (0, 0))
-                else:
-                    # attempt to update display from logical surface as best-effort
-                    try:
-                        scaled = pygame.transform.smoothscale(self.screen, size)
-                        pygame.display.get_surface().blit(scaled, (0, 0))
-                    except Exception:
-                        pass
-                pygame.display.flip()
-            except Exception:
-                pass
-
-            for i in range(steps):
-                alpha = int(255 * (i + 1) / float(steps))
-                try:
-                    overlay = pygame.Surface(size, pygame.SRCALPHA)
-                    overlay.fill((0, 0, 0, alpha))
-                    if disp is not None:
-                        try:
-                            disp.blit(overlay, (0, 0))
-                        except Exception:
-                            pass
-                        pygame.display.flip()
-                    else:
-                        try:
-                            pygame.display.flip()
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-                try:
-                    pygame.time.delay(delay_ms)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-    def fade_in(self, steps=None, delay_ms=None):
-        """Fade from black into the current logical screen on the display."""
-        if steps is None:
-            steps = getattr(self, 'fade_steps', 12)
-        if delay_ms is None:
-            delay_ms = getattr(self, 'fade_delay_ms', 16)
-        try:
-            disp = getattr(self, '_display_screen', None)
-            try:
-                size = disp.get_size() if disp else (self.screen.get_width(), self.screen.get_height())
-            except Exception:
-                size = (self.screen.get_width(), self.screen.get_height())
-
-            # Start from a full-black screen then reveal the logical screen
-            try:
-                if disp is not None:
-                    disp.fill((0, 0, 0))
-                else:
-                    try:
-                        pygame.display.get_surface().fill((0, 0, 0))
-                    except Exception:
-                        pass
-                pygame.display.flip()
-            except Exception:
-                pass
-
-            # Pre-render scaled content once
-            try:
-                if disp is not None:
-                    try:
-                        scaled = pygame.transform.smoothscale(self.screen, disp.get_size())
-                    except Exception:
-                        scaled = pygame.transform.scale(self.screen, disp.get_size())
-                else:
-                    try:
-                        scaled = pygame.transform.smoothscale(self.screen, size)
-                    except Exception:
-                        scaled = None
-            except Exception:
-                scaled = None
-
-            for i in range(steps):
-                alpha = int(255 * (1.0 - (i + 1) / float(steps)))
-                try:
-                    if disp is not None and scaled is not None:
-                        disp.blit(scaled, (0, 0))
-                    elif scaled is not None:
-                        try:
-                            pygame.display.get_surface().blit(scaled, (0, 0))
-                        except Exception:
-                            pass
-                    overlay = pygame.Surface(size, pygame.SRCALPHA)
-                    overlay.fill((0, 0, 0, alpha))
-                    if disp is not None:
-                        try:
-                            disp.blit(overlay, (0, 0))
-                        except Exception:
-                            pass
-                        pygame.display.flip()
-                    else:
-                        try:
-                            pygame.display.flip()
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-                try:
-                    pygame.time.delay(delay_ms)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-    def present(self):
-        """Scale the logical surface to the display and flip the buffer.
-
-        Mini-games should call this instead of pygame.display.flip() so
-        presentation is consistent whether windowed or fullscreen.
-        """
-        try:
-            disp = getattr(self, '_display_screen', None)
-            if disp is not None:
-                try:
-                    scaled = pygame.transform.smoothscale(self.screen, disp.get_size())
-                except Exception:
-                    scaled = pygame.transform.scale(self.screen, disp.get_size())
-                disp.blit(scaled, (0, 0))
-                pygame.display.flip()
-                return
-        except Exception:
-            pass
-        try:
-            pygame.display.flip()
-        except Exception:
-            pass
-
-    def safe_delay_ms(self, ms: int):
-        """Delay for approximately ms milliseconds without blocking the
-        Emscripten/WASM main thread.
-
-        On web/pygbag builds we avoid calling blocking backends like
-        pygame.time.delay() directly since that can stall the single-threaded
-        event loop. Instead we pump events and tick the local clock in short
-        chunks. On desktop builds we fall back to pygame.time.delay.
-        """
-        try:
-            # Best-effort detection of web/pygbag environment
-            import sys as _sys
-            is_web = bool(getattr(_sys, '_emscripten_info', False) or 'pygbag' in _sys.modules or 'emscripten' in getattr(_sys, 'platform', ''))
-        except Exception:
-            is_web = False
-
-        # If running on web, break the delay into small ticks so the
-        # browser main loop can continue to service events and rendering.
-        if is_web:
-            # choose a safe chunk size (16ms ~= 60fps)
-            chunk = 16
-            remaining = int(ms)
-            try:
-                while remaining > 0:
-                    try:
-                        pygame.event.pump()
-                    except Exception:
-                        pass
-                    try:
-                        # tick a single frame to yield control and update timing
-                        self.clock.tick(FPS)
-                    except Exception:
-                        pass
-                    remaining -= chunk
-            except Exception:
-                # swallow failures and fall back to a blocking delay as last resort
-                try:
-                    pygame.time.delay(ms)
-                except Exception:
-                    pass
+        if self.state == GameState.GAME_OVER:
+            hub_ui.draw_game_over_screen(self)
         else:
-            try:
-                pygame.time.delay(ms)
-            except Exception:
-                # ignore failures
-                pass
+            hub_ui.draw_home_screen(self)
+
+    # ---------- Main loop ----------
+
+    def update(self, dt):
+        self.animation_time += dt
+        self.update_stats()
+        self.age_mango()
+        if self.mango_state["health"] <= 30:
+            self.is_sick = True
+
+        hour = datetime.now().hour
+        if hour != self.current_hour:
+            self.current_hour = hour
+            self.is_night = is_night_hour(hour)
+
+        if self.is_game_over():
+            self.state = GameState.GAME_OVER
+        self.particle_system.update(dt)
+        self.hud_messages = [(text, until) for text, until in self.hud_messages if until > time.time()]
+
+    def handle_event(self, event):
+        import hub_ui
+
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self.state == GameState.GAME_OVER:
+                self.audio.play_sfx("button")
+                self.restart_game()
+            else:
+                hub_ui.handle_click(self, event.pos)
+        elif event.type == pygame.MOUSEMOTION:
+            hub_ui.handle_drag(self, event.pos)
+        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            hub_ui.handle_release(self)
+        elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE and not IS_WEB:
+            self.running = False
+
+    async def run(self):
+        self.audio.unlock()  # works right away on desktop; in the browser it retries on first click
+        self.audio.play_music("home")
+        while self.running:
+            for event in self.events():
+                self.handle_event(event)
+            if self.pending_scene is not None:
+                scene, self.pending_scene = self.pending_scene, None
+                await scene
+                continue
+            self.update(1.0 / FPS)
+            self.draw()
+            await self.next_frame()
+        self.save_state()
+
 
 def main():
-    """Main function to run the game.
+    asyncio.run(MangoTamagotchi().run())
+    pygame.quit()
 
-    If an asyncio event loop is already running (as in pygbag/web builds),
-    schedule the main game coroutine on that loop. Otherwise, use
-    asyncio.run() for a normal desktop run.
-    """
-    import asyncio
-    game = MangoTamagotchi()
-
-    # In pygbag / Python-WASM the asyncio event loop is already running.
-    # Calling asyncio.run() inside an active loop raises RuntimeError. Detect
-    # that case and schedule the coroutine on the running loop instead so
-    # the game runs correctly both on desktop and in the browser.
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-
-    if loop and loop.is_running():
-        # Schedule the coroutine on the existing loop and return immediately.
-        # This is the pattern recommended for embedding in pygbag.
-        asyncio.ensure_future(game.run())
-    else:
-        asyncio.run(game.run())
 
 if __name__ == "__main__":
     main()
