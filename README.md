@@ -26,7 +26,7 @@ Keep Mango healthy and happy. His **hunger, happiness, cleanliness, and energy**
 
 | Button | What it does |
 |---|---|
-| **Feed** | Starts the Feed mini-game; catch 20 seeds to fill Mango up |
+| **Feed** | Starts the Feed mini-game; catch 20 seeds to fill Mango up (they fall faster the fuller he gets, and misses cost a point) |
 | **Bathe** | +30 cleanliness, +10 happiness |
 | **Play** | +20 happiness, costs 15 energy (Mango needs some energy left) |
 | **Rest** | +30 energy |
@@ -39,6 +39,12 @@ Every couple of minutes something random can happen: Mango might get sick or sta
 **Controls:** everything works with a mouse or a finger. On a keyboard, SPACE starts and flaps, the arrow keys move Mango in Feed, R plays again, and ESC goes back to the hub. On the desktop, F11 toggles fullscreen.
 
 Your progress is saved automatically: in a small SQLite database on the desktop, and in your browser's local storage on the web.
+
+### Playing on a phone
+
+Turn your phone sideways for the biggest Mango. The first visit downloads about 12 MB (mostly the Python runtime that pygbag runs in the browser) and takes a little while to start on slower phones; after that everything is cached, so the game also works offline. In your browser's menu, **Add to Home Screen** installs Mango like an app that opens full screen.
+
+![The loading screen: Mango bobbing above a progress bar](docs/loading.jpg)
 
 ## Run it on your computer
 
@@ -69,7 +75,13 @@ Two things stop most pygame games from running under pygbag, and this one had bo
 1. **Every loop has to pause for the browser.** A browser tab runs your Python on the same thread as the page itself, so a `while True` loop that never lets go freezes everything. The main loop already did `await asyncio.sleep(0)` each frame, but each mini-game ran its own loop that didn't. Now there's one `next_frame()` helper that every scene awaits, and the mini-games and fade transitions are `async`.
 2. **`main.py` must import pygame itself.** pygbag decides which libraries to download by reading `main.py`'s imports. Importing pygame only inside another module meant the browser got an empty `pygame` with no `init()`.
 
-Smaller things that matter on the web: audio is `.ogg` (14 MB of `.wav` became under 1 MB), sound can only start after the first click, images are stored at the size they're drawn, and saves go to `localStorage` because files written in the browser disappear on reload.
+Smaller things that matter on the web: audio is `.ogg` (14 MB of `.wav` became about 0.6 MB), sound can only start after the first click, images are stored at the size they're drawn, and saves go to `localStorage` because files written in the browser disappear on reload.
+
+### The loading screen and offline cache
+
+`web/mango.tmpl` replaces pygbag's default page (a terminal) with a Mango loading screen whose progress bar follows the real loading stages. Most of the wait on a phone is the Python runtime starting up rather than downloading, so the bar moves through "Downloading", "Unpacking", and "Waking Mango up" instead of sitting still. If the game ever crashes while starting, the error appears on that screen instead of the page hanging.
+
+`web/sw.js` is a service worker: pygbag's runtime is versioned and never changes, so it's cached permanently after the first visit, while the game's own files are checked for updates each time. `web/manifest.webmanifest` and the icons let phones install it.
 
 ## Tests
 
@@ -93,13 +105,17 @@ pytest
 | `db.py`, `schema.sql` | Saving to SQLite (desktop) or `localStorage` (browser) |
 | `api.py` | Simulated weather and lovebird facts |
 | `particle_effects.py`, `ui_helpers.py` | Sparkles, buttons, bars, and panels |
-| `config.py` | Screen size, colors, and file locations |
+| `effects.py` | Floating "+1" text and screen shake |
+| `config.py` | Screen size, colors, fonts, and file locations |
 | `build_web.py` | Packages the game for pygbag |
+| `web/` | The browser page template, service worker, install manifest, and icons |
+| `assets/fonts/` | Fredoka, the rounded font used everywhere (SIL Open Font License, see `OFL.txt`) |
 
 ## Acknowledgements
 
 - **CS50P staff and community**, for the course
 - **pygame-ce** and **pygbag**, for making Python games run everywhere
+- **Fredoka** by the Fredoka Project Authors, used under the SIL Open Font License
 - **Eric**, for his cameo in Tickle
 - **AI assistance** was used for debugging, refactoring, and the web port. Final design and creative decisions are my own.
 - **Mango**, always
